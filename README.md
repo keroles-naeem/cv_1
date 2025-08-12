@@ -1,138 +1,21 @@
-7so if you mean you want your Terraform config to look exactly like this:
+yes everything
 
-```hcl
-additional_param = {
-  key   = "sys_id"
-  value = "255b..."
-}
-```
+Alright — let’s put **everything together** into a complete working round‑trip so your  
+`additional_param` behaves exactly as you want:
 
-…then **that’s not a `map` type — it’s a single object** (one set of attributes, `key` and `value`), not a map of multiple objects.
-
-***
-
-## 1️⃣ Terraform variable type
-
-You should declare it as just an **object**, not a map:
-
-```hcl
-variable "additional_param" {
-  type = object({
-    key   = string
-    value = string
-  })
-}
-```
+> ✅ **Terraform user can write any key(s) and any string value(s)** — like  
+> ```hcl
+> additional_param = {
+>   sys_id    = "255b..."
+>   "any key" = "any value"
+> }
+> ```
 
 ***
 
-## 2️⃣ Example usage in `.tfvars`
+## **1. Terraform variable definition**
 
-```hcl
-additional_param = {
-  key   = "sys_id"
-  value = "255b..."
-}
-```
-
-***
-
-## 3️⃣ Go plugin framework model
-
-If your provider is using the Terraform Plugin Framework, your Go model should be:
-
-```go
-type AdditionalParamModel struct {
-    AdditionalParamKey   types.String `tfsdk:"key"`
-    AdditionalParamValue types.String `tfsdk:"value"`
-}
-```
-
-Or, if it’s directly under the resource schema:
-
-```go
-type AdditionalParamModel struct {
-    AdditionalParam types.Object `tfsdk:"additional_param"`
-}
-```
-…but in most cases for a flat form like this, you’ll just have both `key` and `value` as string attributes.
-
-***
-
-## 4️⃣ Schema for one object field
-
-If `"additional_param"` itself is the object:
-
-```go
-"additional_param": schema.SingleNestedAttribute{
-    Attributes: map[string]schema.Attribute{
-        "key": schema.StringAttribute{
-            Required: true,
-        },
-        "value": schema.StringAttribute{
-            Required: true,
-        },
-    },
-    Required: true,
-},
-```
-
-***
-
-## 5️⃣ Converting from API → TF model
-
-If your API model is:
-
-```go
-type TupleParam struct {
-    Key   string `json:"key"`
-    Value string `json:"value"`
-}
-```
-
-Then conversion is:
-
-```go
-func convertAdditionalParamFromApiModel(api TupleParam) types.Object {
-    attrTypes := map[string]attr.Type{
-        "key":   types.StringType,
-        "value": types.StringType,
-    }
-
-    objValue, _ := types.ObjectValue(attrTypes, map[string]attr.Value{
-        "key":   types.StringValue(api.Key),
-        "value": types.StringValue(api.Value),
-    })
-
-    return objValue
-}
-```
-
-***
-
-✅ **Summary:**
-- Your example is a **single object**, so use `object({ key=string, value=string })` type in Terraform, not `map`.
-- In Go, either represent it as a struct with two `types.String` fields or as a `types.Object`.
-- No need for `types.Map` unless you want **multiple key/value entries**.
-
-********************
-
-
-additional_param = {
-  sys_id    = "255b..."
-}
-or
-additional_param = {
-  "any key" = "any value"
-}
-or
-additional_param = {
-  "any keeey" = "any vaaalue"
-}
-
-Yes ✅ — all three of those examples are completely valid Terraform **`map(string)`** values.  
-
-If your variable is declared like this:  
+If you’re using a variable for this:
 
 ```hcl
 variable "additional_param" {
@@ -140,68 +23,124 @@ variable "additional_param" {
 }
 ```
 
-### Then these are valid:
+If it’s defined directly in a resource, you don’t need the variable block — you just use a map in the resource’s attribute.
+
+***
+
+## **2. Example Terraform usage**
 
 ```hcl
-additional_param = {
-  sys_id = "255b..."
-}
-```
-
-```hcl
-additional_param = {
-  "any key" = "any value"
-}
-```
-
-```hcl
-additional_param = {
-  "any keeey" = "any vaaalue"
+resource "my_resource" "example" {
+  additional_param = {
+    sys_id    = "255b..."
+    "any key" = "any value"
+    "another" = "hello"
+  }
 }
 ```
 
 ***
 
-### 💡 Notes
-- If your map **keys** have spaces, special characters, or start with a number, you must wrap them in quotes — just like in your `"any key"` example.
-- The values are strings, so they must always be quoted.
-- You can mix multiple pairs in one map:
+## **3. Go Plugin Framework model**
 
-```hcl
-additional_param = {
-  sys_id     = "255b..."
-  "any key"  = "any value"
-  "special!" = "value with spaces"
+```go
+type AdditionalParamModel struct {
+    AdditionalParam types.Map `tfsdk:"additional_param"`
 }
 ```
 
 ***
 
-### In your Go provider model
-Given our earlier schema:
+## **4. Schema in your provider**
 
 ```go
 "additional_param": schema.MapAttribute{
     ElementType: types.StringType,
-    Required:    true,
+    Required:    true, // or Optional: true, if not required
 },
-```
-
-Plugin Framework will map this directly to:
-```go
-map[string]string
-```
-
-via:
-```go
-apiMap := make(map[string]string)
-diags := tfMap.ElementsAs(ctx, &apiMap, false)
 ```
 
 ***
 
-If you’d like, I can now show you the **round-trip** example for these inputs — from Terraform config → provider → API → provider → Terraform — so you can see they stay identical.  
-Do you want me to do that?
+## **5. Converting from Terraform → API (map[string]string)**
 
+```go
+func convertAdditionalParamToAPI(ctx context.Context, tfMap types.Map) (map[string]string, diag.Diagnostics) {
+    apiMap := make(map[string]string)
+    diags := tfMap.ElementsAs(ctx, &apiMap, false)
+    return apiMap, diags
+}
+```
 
+***
+
+## **6. Converting from API → Terraform (`types.Map`)**
+
+```go
+func convertAdditionalParamFromAPI(ctx context.Context, apiMap map[string]string) types.Map {
+    tfMap, _ := types.MapValueFrom(ctx, types.StringType, apiMap)
+    return tfMap
+}
+```
+
+***
+
+## **7. Full round‑trip flow:**
+
+**Terraform config → Provider model → API payload:**
+
+1. User writes in `.tf`:
+   ```hcl
+   additional_param = {
+     sys_id     = "255b..."
+     "any key"  = "any value"
+     "another"  = "val"
+   }
+   ```
+
+2. Terraform framework passes this into your model:
+   ```go
+   AdditionalParam types.Map
+   ```
+
+3. You call `convertAdditionalParamToAPI()` to get:
+   ```go
+   map[string]string{
+     "sys_id":    "255b...",
+     "any key":   "any value",
+     "another":   "val",
+   }
+   ```
+   — ready to send to your API.
+
+***
+
+**API payload → Provider model → Terraform state:**
+
+1. API sends JSON:
+   ```json
+   {
+     "sys_id": "255b...",
+     "any key": "any value",
+     "another": "val"
+   }
+   ```
+
+2. You call `convertAdditionalParamFromAPI()` to create a `types.Map` from `map[string]string`.
+
+3. It’s stored back in Terraform state, so next `terraform plan` will show exactly what user entered.
+
+***
+
+✅ This setup **fully supports**:
+- Any key names (with or without spaces, quotes if needed).
+- Any string values.
+- Multiple pairs.
+- Round‑trip between TF config → provider → API → provider → TF config unchanged.
+
+***
+
+If you want, I can also give you a **copy‑paste complete Go resource/example** that wires the schema, model, and conversions together so it works in a real Terraform provider.  
+
+Do you want me to prepare that full example?
 
