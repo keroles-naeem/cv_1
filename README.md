@@ -1,123 +1,122 @@
-but it's
-AdditionalParam types.Map `tfsdk:"additional_param
+so if you mean you want your Terraform config to look exactly like this:
 
-Ah — now I see.  
-You’re clarifying that in your Go **Terraform Plugin Framework** model, the `AdditionalParam` field itself is defined as a **`types.Map`**, not as two separate `types.String` values.  
+```hcl
+additional_param = {
+  key   = "sys_id"
+  value = "255b..."
+}
+```
 
-That changes how your conversion function should be implemented — because if the field is `types.Map` in the provider model, you can’t just assign `types.StringValue(...)` to it. You need to **construct a `types.Map` of nested objects** that matches your HCL type definition.
+…then **that’s not a `map` type — it’s a single object** (one set of attributes, `key` and `value`), not a map of multiple objects.
 
 ***
 
-## 1️⃣ Your Terraform HCL type
-From earlier conversation, it sounds like your schema is something like:
+## 1️⃣ Terraform variable type
+
+You should declare it as just an **object**, not a map:
 
 ```hcl
 variable "additional_param" {
-  type = map(object({
+  type = object({
     key   = string
     value = string
-  }))
+  })
 }
 ```
 
 ***
 
-## 2️⃣ Matching Go model
-To represent this as a **`types.Map` of nested objects** in your Go Plugin Framework model:
+## 2️⃣ Example usage in `.tfvars`
+
+```hcl
+additional_param = {
+  key   = "sys_id"
+  value = "255b..."
+}
+```
+
+***
+
+## 3️⃣ Go plugin framework model
+
+If your provider is using the Terraform Plugin Framework, your Go model should be:
 
 ```go
 type AdditionalParamModel struct {
-    AdditionalParam types.Map `tfsdk:"additional_param"`
+    AdditionalParamKey   types.String `tfsdk:"key"`
+    AdditionalParamValue types.String `tfsdk:"value"`
 }
 ```
 
-***
-
-## 3️⃣ Schema definition in provider
-In your provider resource or data source schema:
+Or, if it’s directly under the resource schema:
 
 ```go
-"additional_param": schema.MapNestedAttribute{
-    NestedObject: schema.NestedAttributeObject{
-        Attributes: map[string]schema.Attribute{
-            "key": schema.StringAttribute{
-                Required: true,
-            },
-            "value": schema.StringAttribute{
-                Required: true,
-            },
+type AdditionalParamModel struct {
+    AdditionalParam types.Object `tfsdk:"additional_param"`
+}
+```
+…but in most cases for a flat form like this, you’ll just have both `key` and `value` as string attributes.
+
+***
+
+## 4️⃣ Schema for one object field
+
+If `"additional_param"` itself is the object:
+
+```go
+"additional_param": schema.SingleNestedAttribute{
+    Attributes: map[string]schema.Attribute{
+        "key": schema.StringAttribute{
+            Required: true,
+        },
+        "value": schema.StringAttribute{
+            Required: true,
         },
     },
-    Optional: true,
+    Required: true,
 },
 ```
 
 ***
 
-## 4️⃣ Converting from API model
-Let’s say your API sends you this Go type:
+## 5️⃣ Converting from API → TF model
+
+If your API model is:
 
 ```go
-type AdditionalParamApiModel struct {
+type TupleParam struct {
     Key   string `json:"key"`
     Value string `json:"value"`
 }
 ```
 
-And you have `map[string]AdditionalParamApiModel` from the API.
-
-You’d build the `types.Map` like:
+Then conversion is:
 
 ```go
-func convertAdditionalParamToTFSdk(apiMap map[string]AdditionalParamApiModel) types.Map {
-    // Build a map of attribute values
-    tfMap := make(map[string]attr.Value)
-
-    for k, v := range apiMap {
-        objValue, _ := types.ObjectValue(
-            map[string]attr.Type{
-                "key":   types.StringType,
-                "value": types.StringType,
-            },
-            map[string]attr.Value{
-                "key":   types.StringValue(v.Key),
-                "value": types.StringValue(v.Value),
-            },
-        )
-        tfMap[k] = objValue
+func convertAdditionalParamFromApiModel(api TupleParam) types.Object {
+    attrTypes := map[string]attr.Type{
+        "key":   types.StringType,
+        "value": types.StringType,
     }
 
-    // Convert to Terraform Plugin Framework MapValue
-    result, _ := types.MapValue(
-        types.ObjectType{
-            AttrTypes: map[string]attr.Type{
-                "key":   types.StringType,
-                "value": types.StringType,
-            },
-        },
-        tfMap,
-    )
+    objValue, _ := types.ObjectValue(attrTypes, map[string]attr.Value{
+        "key":   types.StringValue(api.Key),
+        "value": types.StringValue(api.Value),
+    })
 
-    return result
-}
-```
-
-Then your overall conversion into your model is:
-
-```go
-model := AdditionalParamModel{
-    AdditionalParam: convertAdditionalParamToTFSdk(apiAdditionalParamMap),
+    return objValue
 }
 ```
 
 ***
 
-✅ **Key point:**  
-Because `AdditionalParam` is a `types.Map` in your Go model, you **must** build a `types.MapValue()` from `map[string]attr.Value`, where each value is itself a Terraform `ObjectValue` representing `{ key, value }`.
+✅ **Summary:**
+- Your example is a **single object**, so use `object({ key=string, value=string })` type in Terraform, not `map`.
+- In Go, either represent it as a struct with two `types.String` fields or as a `types.Object`.
+- No need for `types.Map` unless you want **multiple key/value entries**.
 
 ***
 
-If you want, I can give you **the inverse function** too — to convert from `types.Map` coming from Terraform into your `map[string]AdditionalParamApiModel` for sending back to the API.  
-
-Do you want me to prepare that as well? That way your mapping works in both directions.
+If you want, I can rewrite your **whole provider schema + TF model + both conversions** specifically for this **one-object** case so you can drop all the complex `map` handling we discussed earlier.  
+Do you want me to do that?
 
