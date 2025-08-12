@@ -1,4 +1,4 @@
-so if you mean you want your Terraform config to look exactly like this:
+7so if you mean you want your Terraform config to look exactly like this:
 
 ```hcl
 additional_param = {
@@ -115,8 +115,93 @@ func convertAdditionalParamFromApiModel(api TupleParam) types.Object {
 - In Go, either represent it as a struct with two `types.String` fields or as a `types.Object`.
 - No need for `types.Map` unless you want **multiple key/value entries**.
 
+********************
+
+
+additional_param = {
+  sys_id    = "255b..."
+}
+or
+additional_param = {
+  "any key" = "any value"
+}
+or
+additional_param = {
+  "any keeey" = "any vaaalue"
+}
+
+Yes ✅ — all three of those examples are completely valid Terraform **`map(string)`** values.  
+
+If your variable is declared like this:  
+
+```hcl
+variable "additional_param" {
+  type = map(string)
+}
+```
+
+### Then these are valid:
+
+```hcl
+additional_param = {
+  sys_id = "255b..."
+}
+```
+
+```hcl
+additional_param = {
+  "any key" = "any value"
+}
+```
+
+```hcl
+additional_param = {
+  "any keeey" = "any vaaalue"
+}
+```
+
 ***
 
-If you want, I can rewrite your **whole provider schema + TF model + both conversions** specifically for this **one-object** case so you can drop all the complex `map` handling we discussed earlier.  
+### 💡 Notes
+- If your map **keys** have spaces, special characters, or start with a number, you must wrap them in quotes — just like in your `"any key"` example.
+- The values are strings, so they must always be quoted.
+- You can mix multiple pairs in one map:
+
+```hcl
+additional_param = {
+  sys_id     = "255b..."
+  "any key"  = "any value"
+  "special!" = "value with spaces"
+}
+```
+
+***
+
+### In your Go provider model
+Given our earlier schema:
+
+```go
+"additional_param": schema.MapAttribute{
+    ElementType: types.StringType,
+    Required:    true,
+},
+```
+
+Plugin Framework will map this directly to:
+```go
+map[string]string
+```
+
+via:
+```go
+apiMap := make(map[string]string)
+diags := tfMap.ElementsAs(ctx, &apiMap, false)
+```
+
+***
+
+If you’d like, I can now show you the **round-trip** example for these inputs — from Terraform config → provider → API → provider → Terraform — so you can see they stay identical.  
 Do you want me to do that?
+
+
 
