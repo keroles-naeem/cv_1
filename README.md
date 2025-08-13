@@ -293,6 +293,106 @@ func (r *MyResource) Create(ctx context.Context, req resource.CreateRequest, res
 
 ***
 
-If you want, I can also package this into a **full minimal provider** (with `main.go`, schema, and CRUD) so you can compile and run it immediately to test.  
-Do you want me to prepare that final full provider example?
+Gotcha — so now you’re asking about the **opposite direction** of what we discussed in the last message:  
+we want to go from your **API model** → **Terraform Plugin Framework types** (`types.Map`) so that `additional_param` is set in Terraform state exactly in the form:
 
+```hcl
+additional_param = {
+  sys_id    = "255b..."
+  "any key" = "any value"
+}
+```
+
+***
+
+## From our last step
+We settled that in Go your **API struct** should look like:
+
+```go
+type ApiModel struct {
+    AdditionalParam map[string]string `json:"AdditionalParam"`
+}
+```
+
+and the Terraform **resource model** looks like:
+
+```go
+type MyResourceModel struct {
+    AdditionalParam types.Map `tfsdk:"additional_param"`
+}
+```
+
+***
+
+## **convertAdditionalParamToTFSdk** (API → TF types.Map)
+
+You can implement it like this:
+
+```go
+import (
+    "context"
+
+    "github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+func convertAdditionalParamToTFSdk(ctx context.Context, apiMap map[string]string) types.Map {
+    tfMap, _ := types.MapValueFrom(ctx, types.StringType, apiMap)
+    return tfMap
+}
+```
+
+***
+
+### **Usage inside your Read method**  
+When you read back from the API:
+
+```go
+func (r *MyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+    var state MyResourceModel
+    diags := req.State.Get(ctx, &state)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Example: call your API
+    apiResp, err := r.client.GetResource(...)
+    if err != nil {
+        resp.Diagnostics.AddError("Read Error", err.Error())
+        return
+    }
+
+    // Convert from API map[string]string to TF types.Map
+    state.AdditionalParam = convertAdditionalParamToTFSdk(ctx, apiResp.AdditionalParam)
+
+    // Save to Terraform state
+    diags = resp.State.Set(ctx, &state)
+    resp.Diagnostics.Append(diags...)
+}
+```
+
+***
+
+### **Why this works**
+- `types.MapValueFrom()` is a shorthand that takes a regular Go `map[string]string` and constructs the Terraform `types.Map` object.
+- No need to loop manually — the Plugin Framework does the heavy lifting.
+- Works for **any** number of arbitrary keys and string values.
+- This matches perfectly with your schema:
+
+```go
+"additional_param": schema.MapAttribute{
+    ElementType: types.StringType,
+    Required:    true,
+},
+```
+
+***
+
+If you want, I can give you **both** functions side‑by‑side:  
+- `convertAdditionalParamToAPI` (TF → API)  
+- `convertAdditionalParamToTFSdk` (API → TF)  
+…so you have a full round‑trip in one snippet.
+
+Do you want me to prepare that final pair?
+
+ 
