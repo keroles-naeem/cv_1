@@ -156,18 +156,117 @@ Here is how you can fix or handle this:
    
 4. **In Terraform provider development, you often use JSON marshalling to pretty-print structs or request bodies for debugging, so using `json.MarshalIndent` as shown above is common.**
 
+
+
+
+
+i want to print all variable send to api
+
+Gotcha — you now want to **print every variable you are sending to the API** so you can debug the exact payload being sent from your Terraform provider.
+
+Because you’re working with the Terraform Plugin Framework, you usually have a **plan** or **state** struct (e.g. `MyResourceModel`) that you pass through your conversion functions before calling your API client.
+
 ***
 
-If you want, I can show you a snippet that integrates JSON marshalling into your debug prints so you both use and see the `json` package in action, fixing the "imported and not used" error. Would you like me to do that?
+## 1️⃣ Simple case — your API request struct
+If you’ve already built your API request struct, you can just `fmt.Printf` it:
 
-Citations:
-[1] Deep Dive Into Terraform Provider Debugging With Delve https://dzone.com/articles/deep-dive-into-terraform-provider-debugging
-[2] terraform-provider-genesyscloud/DEBUGGING.md at main https://github.com/MyPureCloud/terraform-provider-genesyscloud/blob/main/DEBUGGING.md
-[3] How to debug Terraform external providers with ... https://stackoverflow.com/questions/66490152/how-to-debug-terraform-external-providers-with-concurrency-issues
-[4] Debugging the AzureRM Terraform Provider - Nathan Fisk https://nathanfisk.co.uk/posts/debugging-azurerm-terraform-provider/
-[5] How To Write And Debug A Custom Terraform Provider https://blog.devgenius.io/how-to-write-and-debug-a-custom-terraform-provider-even-if-you-dont-know-go-bc37fb55cbdd
-[6] Enable logs to debug Terraform https://developer.hashicorp.com/terraform/internals/debugging
-[7] Debugging Terraform - API response body is not listed at logs https://discuss.hashicorp.com/t/debugging-terraform-api-response-body-is-not-listed-at-logs/54162
-[8] Debugging https://notes.kodekloud.com/docs/Terraform-Basics-Training-Course/Terraform-Import-Tainting-Resources-and-Debugging/Debugging
-[9] Development and Debugging https://www.tencentcloud.com/document/product/1172/52387
+```go
+fmt.Printf("DEBUG API request payload: %+v\n", apiReq)
+```
+
+The `%+v` verb shows **field names and values**.
+
+If you want **JSON** so it looks exactly like what you’d send over the wire:
+
+```go
+b, _ := json.MarshalIndent(apiReq, "", "  ")
+fmt.Println("DEBUG API request JSON:")
+fmt.Println(string(b))
+```
+
+***
+
+## 2️⃣ Extracting variables from `plan` (Terraform model)
+If you want *all* variables a user set in Terraform before converting to API, just debug‑print the `plan` struct:
+
+```go
+fmt.Printf("DEBUG Terraform plan: %+v\n", plan)
+```
+
+The catch: `types.Map`, `types.String`, `types.Int64`, etc. don’t pretty‑print as their raw values — you’ll get `Value = {...}`.
+
+So for each `types.Map`, you must extract to a Go type:
+
+```go
+if !plan.AdditionalParam.IsNull() {
+    var addParams map[string]string
+    diags := plan.AdditionalParam.ElementsAs(ctx, &addParams, false)
+    if diags.HasError() {
+        fmt.Println("Error converting AdditionalParam:", diags)
+    }
+    fmt.Println("DEBUG AdditionalParam:", addParams)
+}
+```
+
+***
+
+## 3️⃣ Put it all together — debug in Create/Update before API call
+
+```go
+func (r *MyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+    var plan MyResourceModel
+    diags := req.Plan.Get(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Extract AdditionalParam map for printing
+    var addParams map[string]string
+    if !plan.AdditionalParam.IsNull() {
+        diags := plan.AdditionalParam.ElementsAs(ctx, &addParams, false)
+        resp.Diagnostics.Append(diags...)
+    }
+
+    fmt.Println("DEBUG: AdditionalParam to send to API:", addParams)
+
+    // Convert whole plan to API model
+    apiMap, _ := convertAdditionalParamToAPI(ctx, plan.AdditionalParam)
+    apiReq := ApiModel{
+        AdditionalParam: apiMap,
+        // other fields...
+    }
+
+    // Print full API request as JSON
+    b, _ := json.MarshalIndent(apiReq, "", "  ")
+    fmt.Println("DEBUG: Full API request JSON:\n", string(b))
+
+    // Call API
+    apiResp, err := r.client.CreateResource(apiReq)
+    if err != nil {
+        resp.Diagnostics.AddError("API Error", err.Error())
+        return
+    }
+
+    plan.AdditionalParam = convertAdditionalParamToTFSdk(ctx, apiResp.AdditionalParam)
+
+    resp.State.Set(ctx, &plan)
+}
+```
+
+***
+
+## ✅ Key points
+
+- **Before** calling your API client, log the struct (or JSON) so you see exactly what’s being sent.
+- Use `%+v` for field names or `json.MarshalIndent` for pretty JSON.
+- For `types.Map` in Terraform Plugin Framework, use `.ElementsAs()` to get a regular Go map for logging/debugging.
+- This works the same way in `Create`, `Update`, or even `Delete` if you want to debug deletions.
+
+***
+
+If you want, I can write you a **drop‑in debug utility** that takes *any* `types.Object`/`types.Map` Terraform model and prints all fields recursively as a clean JSON before API calls — that way you always see the exact payload.  
+
+Do you want me to prepare that?
 
