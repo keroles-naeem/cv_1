@@ -794,3 +794,112 @@ If you want, I can now add the **minimal `main.go` and provider registration** s
 
 Do you want me to extend it with that?
 
+
+Gotcha — you now want to **print every variable you are sending to the API** so you can debug the exact payload being sent from your Terraform provider.
+
+Because you’re working with the Terraform Plugin Framework, you usually have a **plan** or **state** struct (e.g. `MyResourceModel`) that you pass through your conversion functions before calling your API client.
+
+***
+
+## 1️⃣ Simple case — your API request struct
+If you’ve already built your API request struct, you can just `fmt.Printf` it:
+
+```go
+fmt.Printf("DEBUG API request payload: %+v\n", apiReq)
+```
+
+The `%+v` verb shows **field names and values**.
+
+If you want **JSON** so it looks exactly like what you’d send over the wire:
+
+```go
+b, _ := json.MarshalIndent(apiReq, "", "  ")
+fmt.Println("DEBUG API request JSON:")
+fmt.Println(string(b))
+```
+
+***
+
+## 2️⃣ Extracting variables from `plan` (Terraform model)
+If you want *all* variables a user set in Terraform before converting to API, just debug‑print the `plan` struct:
+
+```go
+fmt.Printf("DEBUG Terraform plan: %+v\n", plan)
+```
+
+The catch: `types.Map`, `types.String`, `types.Int64`, etc. don’t pretty‑print as their raw values — you’ll get `Value = {...}`.
+
+So for each `types.Map`, you must extract to a Go type:
+
+```go
+if !plan.AdditionalParam.IsNull() {
+    var addParams map[string]string
+    diags := plan.AdditionalParam.ElementsAs(ctx, &addParams, false)
+    if diags.HasError() {
+        fmt.Println("Error converting AdditionalParam:", diags)
+    }
+    fmt.Println("DEBUG AdditionalParam:", addParams)
+}
+```
+
+***
+
+## 3️⃣ Put it all together — debug in Create/Update before API call
+
+```go
+func (r *MyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+    var plan MyResourceModel
+    diags := req.Plan.Get(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Extract AdditionalParam map for printing
+    var addParams map[string]string
+    if !plan.AdditionalParam.IsNull() {
+        diags := plan.AdditionalParam.ElementsAs(ctx, &addParams, false)
+        resp.Diagnostics.Append(diags...)
+    }
+
+    fmt.Println("DEBUG: AdditionalParam to send to API:", addParams)
+
+    // Convert whole plan to API model
+    apiMap, _ := convertAdditionalParamToAPI(ctx, plan.AdditionalParam)
+    apiReq := ApiModel{
+        AdditionalParam: apiMap,
+        // other fields...
+    }
+
+    // Print full API request as JSON
+    b, _ := json.MarshalIndent(apiReq, "", "  ")
+    fmt.Println("DEBUG: Full API request JSON:\n", string(b))
+
+    // Call API
+    apiResp, err := r.client.CreateResource(apiReq)
+    if err != nil {
+        resp.Diagnostics.AddError("API Error", err.Error())
+        return
+    }
+
+    plan.AdditionalParam = convertAdditionalParamToTFSdk(ctx, apiResp.AdditionalParam)
+
+    resp.State.Set(ctx, &plan)
+}
+```
+
+***
+
+## ✅ Key points
+
+- **Before** calling your API client, log the struct (or JSON) so you see exactly what’s being sent.
+- Use `%+v` for field names or `json.MarshalIndent` for pretty JSON.
+- For `types.Map` in Terraform Plugin Framework, use `.ElementsAs()` to get a regular Go map for logging/debugging.
+- This works the same way in `Create`, `Update`, or even `Delete` if you want to debug deletions.
+
+***
+
+If you want, I can write you a **drop‑in debug utility** that takes *any* `types.Object`/`types.Map` Terraform model and prints all fields recursively as a clean JSON before API calls — that way you always see the exact payload.  
+
+Do you want me to prepare that?
+
