@@ -473,4 +473,107 @@ Do you want me to prepare that?
 
 
 
- 
+it's like 
+Additionalparam types.Map `tfsdk
+
+Ah — okay, so now you’re clarifying that in your **Terraform Plugin Framework model**, the field is actually something like:
+
+```go
+AdditionalParam types.Map `tfsdk:"additional_param"`
+```
+
+That’s perfect — it means in your Go provider model this field *is already* a `types.Map`, which is exactly what we were targeting in all the conversion functions we’ve been talking about.
+
+***
+
+## 🔹 How this fits in
+
+If your struct looks like:
+
+```go
+type MyResourceModel struct {
+    AdditionalParam types.Map `tfsdk:"additional_param"`
+}
+```
+
+Then:
+
+- **In the schema**:
+  ```go
+  "additional_param": schema.MapAttribute{
+      ElementType: types.StringType,
+      Required:    true,
+  },
+  ```
+
+- **API → TF** (read from API, store in state):
+  ```go
+  func convertAdditionalParamToTFSdk(ctx context.Context, apiMap map[string]string) types.Map {
+      tfMap, _ := types.MapValueFrom(ctx, types.StringType, apiMap)
+      return tfMap
+  }
+  ```
+
+  **Usage in Read method:**
+  ```go
+  state.AdditionalParam = convertAdditionalParamToTFSdk(ctx, apiResp.AdditionalParam)
+  ```
+
+- **TF → API** (plan/state to API):
+  ```go
+  func convertAdditionalParamToAPI(ctx context.Context, tfMap types.Map) (map[string]string, diag.Diagnostics) {
+      apiMap := make(map[string]string)
+      diags := tfMap.ElementsAs(ctx, &apiMap, false)
+      return apiMap, diags
+  }
+  ```
+
+  **Usage in Create/Update method:**
+  ```go
+  apiMap, diags := convertAdditionalParamToAPI(ctx, plan.AdditionalParam)
+  resp.Diagnostics.Append(diags...)
+  ```
+
+***
+
+## 🔹 Why `types.Map` works well here
+
+Since the Terraform schema says `"additional_param"` is a `map(string)`, the Plugin Framework automatically ensures:
+
+- **Map keys** in HCL → `string` keys in Go.
+- **Map values** in HCL → `types.String` → `string` in Go.
+- You can store the map directly as `types.Map` in your state.
+- The two helper functions above handle *all* conversions cleanly in both directions.
+
+***
+
+✅ **Bottom line:**  
+With your struct field defined as:
+
+```go
+AdditionalParam types.Map `tfsdk:"additional_param"`
+```
+
+you can drop in the two conversion functions we’ve discussed, pass `ctx` and the value, and your provider will handle:
+
+```hcl
+additional_param = {
+  sys_id    = "255b..."
+  "any key" = "any value"
+}
+```
+
+…without any extra `key`/`value` nesting.
+
+***
+
+If you send me your **exact API model type** for `AdditionalParam`, I can give you the exact mapping function so you can call:
+
+```go
+state.AdditionalParam = convertAdditionalParamToTFSdk(ctx, apiResp.AdditionalParam)
+```
+
+right away without type errors.  
+Do you want me to prepare that mapping next?
+
+
