@@ -120,4 +120,54 @@ Since we added `fmt.Println()` and `json.MarshalIndent()` calls in `Create/Updat
 If you want, I can show you how to make your **Go provider respect `TF_LOG`** and use the built‑in `tflog.Debug()` instead of raw `fmt.Println()` so your debug messages integrate neatly with Terraform’s logging system.  
 
 Do you want me to give you that logging upgrade?
+json imported and not used even i use it?
+
+The error "json imported and not used" in Go occurs when you import the `encoding/json` package but do not actually use it anywhere in your code. Go requires that all imported packages be used; otherwise, it raises a compile-time error.
+
+Here is how you can fix or handle this:
+
+1. **Make sure you use the `json` package where needed:**
+   - For example, if you want to print the API request as JSON for debugging:
+     ```go
+     import (
+       "encoding/json"
+       "fmt"
+       // other imports
+     )
+     
+     // somewhere in your code, before sending API request:
+     b, err := json.MarshalIndent(apiReq, "", "  ")
+     if err != nil {
+         fmt.Println("Error marshalling API request:", err)
+     } else {
+         fmt.Println("DEBUG API request JSON:\n", string(b))
+     }
+     ```
+
+2. **If you have the import but don't need to use JSON yet:**
+   - You can remove the import to satisfy the compiler.
+   - Or, if you want to keep the import for later but avoid errors, you can temporarily do:
+     ```go
+     import _ "encoding/json"
+     ```
+     but this is not recommended for `json` as an unused side effect import.
+
+3. **Check if you have commented out or missed the usage of `json` in your debug prints.**
+   
+4. **In Terraform provider development, you often use JSON marshalling to pretty-print structs or request bodies for debugging, so using `json.MarshalIndent` as shown above is common.**
+
+***
+
+If you want, I can show you a snippet that integrates JSON marshalling into your debug prints so you both use and see the `json` package in action, fixing the "imported and not used" error. Would you like me to do that?
+
+Citations:
+[1] Deep Dive Into Terraform Provider Debugging With Delve https://dzone.com/articles/deep-dive-into-terraform-provider-debugging
+[2] terraform-provider-genesyscloud/DEBUGGING.md at main https://github.com/MyPureCloud/terraform-provider-genesyscloud/blob/main/DEBUGGING.md
+[3] How to debug Terraform external providers with ... https://stackoverflow.com/questions/66490152/how-to-debug-terraform-external-providers-with-concurrency-issues
+[4] Debugging the AzureRM Terraform Provider - Nathan Fisk https://nathanfisk.co.uk/posts/debugging-azurerm-terraform-provider/
+[5] How To Write And Debug A Custom Terraform Provider https://blog.devgenius.io/how-to-write-and-debug-a-custom-terraform-provider-even-if-you-dont-know-go-bc37fb55cbdd
+[6] Enable logs to debug Terraform https://developer.hashicorp.com/terraform/internals/debugging
+[7] Debugging Terraform - API response body is not listed at logs https://discuss.hashicorp.com/t/debugging-terraform-api-response-body-is-not-listed-at-logs/54162
+[8] Debugging https://notes.kodekloud.com/docs/Terraform-Basics-Training-Course/Terraform-Import-Tainting-Resources-and-Debugging/Debugging
+[9] Development and Debugging https://www.tencentcloud.com/document/product/1172/52387
 
