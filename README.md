@@ -395,4 +395,82 @@ If you want, I can give you **both** functions side‑by‑side:
 
 Do you want me to prepare that final pair?
 
+
+
+
+
+AdditionalParam: convertAdditionalParamToTFSdk(serverApiModel.AdditionalParam),
+
+Right — based on everything we’ve been going through, that line:
+
+```go
+AdditionalParam: convertAdditionalParamToTFSdk(serverApiModel.AdditionalParam),
+```
+
+is the reason you were getting the **"not enough arguments"** error earlier.
+
+The `convertAdditionalParamToTFSdk` function we set up has the signature:
+
+```go
+func convertAdditionalParamToTFSdk(ctx context.Context, apiMap map[string]string) types.Map
+```
+
+…but here you’re only passing **one** argument (`serverApiModel.AdditionalParam`), when it actually needs:
+
+1. A `context.Context` (usually `ctx` from the resource method’s `Read`, `Create`, or `Update` signature), and  
+2. The `map[string]string` that came from your API model.
+
+***
+
+## ✅ Correct usage
+
+In your resource Read/Plan/Apply code, change it to:
+
+```go
+AdditionalParam: convertAdditionalParamToTFSdk(ctx, serverApiModel.AdditionalParam),
+```
+
+where:
+- `ctx` is already available in your method signature (e.g., `func (r *Resource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse)`).
+- `serverApiModel.AdditionalParam` is of type `map[string]string`.
+
+***
+
+## ✅ Make sure your function looks like this
+
+```go
+import (
+    "context"
+    "github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+func convertAdditionalParamToTFSdk(ctx context.Context, apiMap map[string]string) types.Map {
+    tfMap, _ := types.MapValueFrom(ctx, types.StringType, apiMap)
+    return tfMap
+}
+```
+
+***
+
+## If you only have the struct, not a map
+
+If `serverApiModel.AdditionalParam` is a struct (not `map[string]string`), you’ll need to first extract or convert it to `map[string]string` before passing it:
+
+```go
+apiMap := serverApiModel.AdditionalParam // must be map[string]string
+AdditionalParam: convertAdditionalParamToTFSdk(ctx, apiMap),
+```
+
+***
+
+### **Bottom line:**  
+That line needs the `ctx` parameter first, then the map — otherwise, you’ll keep hitting the “not enough arguments” compile error.
+
+***
+
+If you want, I can show you **the full correct `Read` method** for your resource using this mapping so you see all the context usage in one block.  
+Do you want me to prepare that?
+
+
+
  
