@@ -822,6 +822,225 @@ func (r *MyResource) Create(ctx context.Context, req resource.CreateRequest, res
 
 If you want, I can also give you the **matching `Read()` method** so API → TF is handled in the same style — that way the round‑trip between TF config ↔ API JSON will work perfectly with this `AdditionalParamApiModel` design.
 
-Do you want me to include that full `Read()` example?
+show me the whole code if we don't have additionalParamApiModel
 
+Alright ✅ — if we **don’t** have an `AdditionalParamApiModel` and we’re just treating `AdditionalParam` as a plain `map[string]string` in the API, then the whole thing becomes much simpler.
+
+Here’s the **complete working code** for the API model, TF model, schema, conversion functions, and example CRUD methods, using only a `map[string]string` for `AdditionalParam`.
+
+***
+
+## 📄 Full Example — `map[string]string` version
+
+```go
+package provider
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+
+    "github.com/hashicorp/terraform-plugin-framework/diag"
+    "github.com/hashicorp/terraform-plugin-framework/resource"
+    "github.com/hashicorp/terraform-plugin-framework/schema"
+    "github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+//
+// ----------------
+// API Models
+// ----------------
+//
+type ApiModel struct {
+    InstanceName     string            `json:"InstanceName"`
+    MysqlVersion     string            `json:"MysqlVersion"`
+    CaasRole         string            `json:"CaasRole"`
+    StorageSize      int               `json:"StorageSize"`
+    DomainJoin       bool              `json:"DomainJoin"`
+    OrganisationUnit string            `json:"OrganisationUnit"`
+    OwnedByGroup     GroupApiModel     `json:"OwnedByGroup"`
+    UsedByGroup      GroupApiModel     `json:"UsedByGroup"`
+    ManagedByGroup   GroupApiModel     `json:"ManagedByGroup"`
+    AdditionalParam  map[string]string `json:"AdditionalParam"` // <- simple map
+    SupportedByGroup GroupApiModel     `json:"SupportedByGroup"`
+    Request          RequestApiModel   `json:"Request"`
+}
+
+type GroupApiModel struct {
+    SysId string `json:"sys_id"`
+    Name  string `json:"name"`
+}
+
+type RequestApiModel struct {
+    ID   string `json:"id"`
+    Type string `json:"type"`
+}
+
+//
+// ----------------
+// Terraform Model
+// ----------------
+//
+type MyResourceModel struct {
+    InstanceName     types.String `tfsdk:"instance_name"`
+    MysqlVersion     types.String `tfsdk:"mysql_version"`
+    CaasRole         types.String `tfsdk:"caas_role"`
+    StorageSize      types.Int64  `tfsdk:"storage_size"`
+    DomainJoin       types.Bool   `tfsdk:"domain_join"`
+    OrganisationUnit types.String `tfsdk:"organisation_unit"`
+    OwnedByGroup     GroupModel   `tfsdk:"owned_by_group"`
+    UsedByGroup      GroupModel   `tfsdk:"used_by_group"`
+    ManagedByGroup   GroupModel   `tfsdk:"managed_by_group"`
+    AdditionalParam  types.Map    `tfsdk:"additional_param"` // <- TF map
+    SupportedByGroup GroupModel   `tfsdk:"supported_by_group"`
+    Request          RequestModel `tfsdk:"request"`
+}
+
+type GroupModel struct {
+    SysId types.String `tfsdk:"sys_id"`
+    Name  types.String `tfsdk:"name"`
+}
+
+type RequestModel struct {
+    ID   types.String `tfsdk:"id"`
+    Type types.String `tfsdk:"type"`
+}
+
+//
+// ----------------
+// Schema
+// ----------------
+//
+func (r *MyResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+    resp.Schema = schema.Schema{
+        Attributes: map[string]schema.Attribute{
+            "instance_name": schema.StringAttribute{
+                Required: true,
+            },
+            "mysql_version": schema.StringAttribute{
+                Required: true,
+            },
+            "caas_role": schema.StringAttribute{
+                Required: true,
+            },
+            "storage_size": schema.Int64Attribute{
+                Required: true,
+            },
+            "domain_join": schema.BoolAttribute{
+                Optional: true,
+            },
+            "organisation_unit": schema.StringAttribute{
+                Optional: true,
+            },
+            "additional_param": schema.MapAttribute{
+                ElementType: types.StringType,
+                Optional:    true,
+                Description: "Arbitrary key-value pairs sent to the API",
+            },
+        },
+    }
+}
+
+//
+// ----------------
+// Conversion Functions
+// ----------------
+//
+
+// TF → API
+func convertAdditionalParamToAPI(ctx context.Context, tfMap types.Map) (map[string]string, diag.Diagnostics) {
+    apiMap := make(map[string]string)
+    diags := tfMap.ElementsAs(ctx, &apiMap, false) // false = disallow nulls
+    return apiMap, diags
+}
+
+// API → TF
+func convertAdditionalParamToTFSdk(ctx context.Context, apiMap map[string]string) types.Map {
+    tfMap, _ := types.MapValueFrom(ctx, types.StringType, apiMap)
+    return tfMap
+}
+
+//
+// ----------------
+// Example CRUD usage
+// ----------------
+//
+
+func (r *MyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+    var plan MyResourceModel
+    diags := req.Plan.Get(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Convert AdditionalParam for API
+    addParams, diags := convertAdditionalParamToAPI(ctx, plan.AdditionalParam)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Build API request
+    apiReq := ApiModel{
+        InstanceName:     plan.InstanceName.ValueString(),
+        MysqlVersion:     plan.MysqlVersion.ValueString(),
+        CaasRole:         plan.CaasRole.ValueString(),
+        StorageSize:      int(plan.StorageSize.ValueInt64()),
+        DomainJoin:       plan.DomainJoin.ValueBool(),
+        OrganisationUnit: plan.OrganisationUnit.ValueString(),
+        OwnedByGroup:     convertGroupToApiModel(plan.OwnedByGroup),
+        UsedByGroup:      convertGroupToApiModel(plan.UsedByGroup),
+        ManagedByGroup:   convertGroupToApiModel(plan.ManagedByGroup),
+        AdditionalParam:  addParams, // simple map
+        SupportedByGroup: convertGroupToApiModel(plan.SupportedByGroup),
+        Request:          convertRequestToApiModel(plan.Request),
+    }
+
+    // Debug print
+    if b, err := json.MarshalIndent(apiReq, "", "  "); err == nil {
+        fmt.Println("DEBUG API request:\n", string(b))
+    }
+
+    // Send to API
+    apiResp, err := r.client.CreateResource(apiReq)
+    if err != nil {
+        resp.Diagnostics.AddError("API Error", err.Error())
+        return
+    }
+
+    // Set state from API response
+    plan.AdditionalParam = convertAdditionalParamToTFSdk(ctx, apiResp.AdditionalParam)
+    diags = resp.State.Set(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+}
+
+func convertGroupToApiModel(g GroupModel) GroupApiModel {
+    return GroupApiModel{
+        SysId: g.SysId.ValueString(),
+        Name:  g.Name.ValueString(),
+    }
+}
+
+func convertRequestToApiModel(rq RequestModel) RequestApiModel {
+    return RequestApiModel{
+        ID:   rq.ID.ValueString(),
+        Type: rq.Type.ValueString(),
+    }
+}
+```
+
+***
+
+### **Key Points in This Version**
+- `AdditionalParam` in both `ApiModel` and `terraform` model is just a **map** (no extra struct).
+- Two small helpers handle **TF ↔ API map conversion** (`convertAdditionalParamToAPI` and `convertAdditionalParamToTFSdk`).
+- Inside Create/Update/Delete you just call `convertAdditionalParamToAPI(ctx, plan.AdditionalParam)` before sending, and `convertAdditionalParamToTFSdk(ctx, apiResp.AdditionalParam)` when reading.
+- Debugging is easy — you can `json.MarshalIndent(apiReq)` to see exactly what’s getting sent.
+
+***
+
+If you want, I can now give you the **matching Read() and Update() methods** so the TF → API → TF round trip is complete with this `map[string]string` approach.  
+
+Do you want me to extend the code with those?
 
