@@ -488,3 +488,164 @@ If you want, I can now add the **minimal `main.go` and provider registration** s
 
 Do you want me to extend it with that?
 
+it expected one argument 
+serverResourceModel.CaasRole.ValueString(),
+
+int(serverResourceModel.StorageSize.ValueInt64()),
+
+serverResourceModel.OrganisationUnit.ValueString(),
+
+InstanceName: serverResourceModel. InstanceName. ValueString(),
+
+MysqlVersion: serverResourceModel.MysqlVersion.ValueString(),
+
+CaasRole:
+
+StorageSize:
+
+DomainJoin: serverResourceModel.DomainJoin. ValueBool(),
+
+OrganisationUnit:
+
+OwnedByGroup: convertGroupToApiModel(serverResourceModel.OwnedByGroup), UsedByGroup: convertGroupToApiModel(serverResourceModel.UsedByGroup), ManagedByGroup: convertGroupToApiModel(serverResourceModel.ManagedByGroup), AdditionalParam: convertAdditionalParamToAPI(ctx, serverResourceModel.AdditionalParam), SupportedByGroup: convertGroupToApiModel(serverResourceModel. SupportedByGroup), Request: convertRequestToApiModel(serverResourceModel.Request),
+
+func convertGroupToApiModel(group GroupModel) GroupApiModel {
+
+return GroupApiModel{
+
+SysId: group.SysId.ValueString(), Name: group. Name.ValueString(),
+
+func convertAdditionalParamToAPI(additional_param AdditionalParamModel) AdditionalParamApiMode
+
+// return AdditionalParamApiModel{
+
+Key: additional_param.Key.ValueString(),
+
+Value: additional param. Value.ValueString(),
+
+func convertAdditionalParamToAPI(ctx context.Context, tfMap types.Map) (map[string]string) {
+
+apiMap := make(map[string]string) diags := tfMap.ElementsAs(ctx, &apiMap, false) // false = don't allow null values
+
+return diags
+
+Ah — I see exactly what’s going wrong here.  
+In your snippet you’ve actually got **two different `convertAdditionalParamToAPI` functions** with different signatures, and that’s causing mismatches and “expected one argument” type errors.
+
+***
+
+## **What’s Happening**
+
+From your pasted code bits:
+
+```go
+// Version 1 — takes a model
+func convertAdditionalParamToAPI(additional_param AdditionalParamModel) AdditionalParamApiModel {
+    return AdditionalParamApiModel{
+        Key:   additional_param.Key.ValueString(),
+        Value: additional_param.Value.ValueString(),
+    }
+}
+```
+
+…and later:
+
+```go
+// Version 2 — takes a ctx and a Terraform types.Map
+func convertAdditionalParamToAPI(ctx context.Context, tfMap types.Map) (map[string]string) {
+    apiMap := make(map[string]string)
+    diags := tfMap.ElementsAs(ctx, &apiMap, false)
+    return diags
+}
+```
+
+That’s a **duplicate function name** with **different parameter lists**, which Go does **not** allow (no function overloading).  
+Also, your second one is returning `diags` (diagnostics), **not** the `apiMap` it built — so it won’t compile or work the way you expect.
+
+***
+
+## **How to fix this**
+
+First, decide what `AdditionalParam` **really is** and how you want to send it to the API:
+
+### Case A — It’s a `map[string]string` in API
+Then the `convertAdditionalParamToAPI` should be only **this version**:
+
+```go
+func convertAdditionalParamToAPI(ctx context.Context, tfMap types.Map) (map[string]string, diag.Diagnostics) {
+    apiMap := make(map[string]string)
+    diags := tfMap.ElementsAs(ctx, &apiMap, false)
+    return apiMap, diags
+}
+```
+
+**Usage:**
+```go
+apiMap, diags := convertAdditionalParamToAPI(ctx, serverResourceModel.AdditionalParam)
+resp.Diagnostics.Append(diags...)
+```
+
+***
+
+### Case B — It’s a single Key/Value pair in API  
+Then it would look like:
+
+```go
+func convertAdditionalParamToAPI(additionalParam AdditionalParamModel) AdditionalParamApiModel {
+    return AdditionalParamApiModel{
+        Key:   additionalParam.Key.ValueString(),
+        Value: additionalParam.Value.ValueString(),
+    }
+}
+```
+
+**Usage:**
+```go
+apiReq.AdditionalParam = convertAdditionalParamToAPI(serverResourceModel.AdditionalParam)
+```
+
+***
+
+## **Why you’re getting “expected one argument”**
+Right now in your `InstanceName: ..., CaasRole: ..., AdditionalParam: ...` struct you’re calling:
+
+```go
+AdditionalParam: convertAdditionalParamToAPI(ctx, serverResourceModel.AdditionalParam)
+```
+
+…but in your file, you have **two** functions named `convertAdditionalParamToAPI` and Go is probably resolving to the wrong one (or failing to compile altogether).
+
+Also, your second version’s signature doesn’t match your call:  
+- **Your code calls**: `(ctx, types.Map)` → expects `(context.Context, types.Map)`  
+- **Your broken version** returns `diags` instead of the built `map[string]string`.
+
+***
+
+## ✅ Recommended cleanup
+
+1. **Pick one canonical implementation**.  
+   Since all earlier discussion was about `map[string]string` (not Key/Value tuple), keep:
+   ```go
+   func convertAdditionalParamToAPI(ctx context.Context, tfMap types.Map) (map[string]string, diag.Diagnostics) {
+       apiMap := make(map[string]string)
+       diags := tfMap.ElementsAs(ctx, &apiMap, false) 
+       return apiMap, diags
+   }
+   ```
+
+2. **Call it properly** in your API request assembly:
+   ```go
+   apiMap, diags := convertAdditionalParamToAPI(ctx, serverResourceModel.AdditionalParam)
+   resp.Diagnostics.Append(diags...)
+   apiReq.AdditionalParam = apiMap
+   ```
+
+3. **Remove the other `convertAdditionalParamToAPI`** version to avoid compile errors.
+
+***
+
+If you want, I can rewrite your **whole API request builder** (`InstanceName`, `CaasRole`, `StorageSize`, `OrganisationUnit`, etc.) into a clean, compiling block that calls `convertGroupToApiModel` and `convertAdditionalParamToAPI` correctly so you stop getting “expected 1 argument” and mismatched types.  
+
+Do you want me to prepare that final corrected code?
+
+
