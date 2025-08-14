@@ -406,3 +406,98 @@ func TestConvertHddToApiModel(t *testing.T) {
 	emptyResult := convertHddToApiModel([]HddItemModel{})
 	assert.Nil(t, emptyResult)
 }
+
+i can't find the variables in json
+
+If you "can't find the variables in JSON" when debugging or printing your Terraform provider's API model JSON, it's likely because:
+
+- Your conversion from Terraform's types.Map (or other types) into plain Go structs with simple fields and JSON tags isn't complete or is producing empty or nil fields.
+- Your test input or Terraform state model has unset or nil values for those variables, so when marshalled to JSON they don't appear.
+- You may be printing the wrong variable or not marshalling the right struct or data.
+  
+Here are some concrete tips to ensure your variables appear in JSON output:
+
+1. **Make sure your API model structs have correct JSON tags** on all fields you expect to appear, for example:
+
+```go
+type ServerApiModel struct {
+    Environment     string            `json:"environment"`
+    ServerCode      string            `json:"serverCode"`
+    AdditionalParam map[string]string `json:"additionalParam"`
+    // other fields...
+}
+```
+
+2. **Ensure all fields are set properly** (not zero-valued or missing) before marshaling, for example:
+
+```go
+apiModel := ServerApiModel{
+    Environment: "production",
+    ServerCode:  "server1",
+    AdditionalParam: map[string]string{
+        "key1": "value1",
+        "key2": "value2",
+    },
+}
+```
+
+3. **Marshal with json.MarshalIndent for readable output:**
+
+```go
+b, err := json.MarshalIndent(apiModel, "", "  ")
+if err != nil {
+    fmt.Println("error marshaling json:", err)
+}
+fmt.Println(string(b))
+```
+
+4. **When converting from your Terraform resource model to API model**, check that fields like `AdditionalParam` are properly converted from Terraform `types.Map` into Go `map[string]string`. Also, be sure the `types.Map` is not null or unknown.
+
+Example safe conversion function:
+
+```go
+func convertAdditionalParamToAPI(ctx context.Context, tfMap types.Map) map[string]string {
+    if tfMap.IsNull() || tfMap.IsUnknown() {
+        return map[string]string{}
+    }
+    apiMap := make(map[string]string)
+    _ = tfMap.ElementsAs(ctx, &apiMap, false)
+    return apiMap
+}
+```
+
+5. **In your tests or code, make sure that the Terraform model field `AdditionalParam` is assigned a proper map value and not left uninitialized (which would cause nil dereference or empty JSON).**
+
+Example assigning a default empty map in tests:
+
+```go
+AdditionalParam: types.MapValueMust(types.StringType, map[string]string{}),
+```
+
+6. **Confirm you are printing the correct struct instance after conversion to API model.**
+
+Example wrapping in a helper function and printing inside your provider method or test:
+
+```go
+apiModel := ToApiModel(ctx, tfModel)
+
+b, _ := json.MarshalIndent(apiModel, "", "  ")
+fmt.Println("API Model JSON:\n", string(b))
+```
+
+If you do all this properly, you should see all your variables showing up correctly in the JSON output.
+
+***
+
+If you want, I can help you review your exact conversion and print logic to ensure that all your Terraform model variables appear correctly in the JSON serialized API model. Would you like me to do that?
+
+Citations:
+[1] JSON Configuration Syntax - Terraform https://developer.hashicorp.com/terraform/language/syntax/json
+[2] Writing an internal Terraform provider from A to Z https://akuszyk.com/2025-05-21-internal-terraform-providers-from-a-to-z.html
+[3] JSON Output Format Overview - Terraform https://developer.hashicorp.com/terraform/internals/json-format
+[4] How To Create a Terraform Provider — a Guide for Absolute ... https://www.speakeasy.com/blog/create-a-terraform-provider-a-guide-for-beginners
+[5] Building a Terraform Provider-Part-III— Resource Setup https://blog.devops.dev/building-a-terraform-provider-part-iii-resource-creation-db5b6eeb559e
+[6] Generate a Terraform Provider | Stainless docs https://www.stainless.com/docs/guides/getting-started-with-terraform
+[7] aws_transfer_server | Resources | hashicorp/aws | Terraform https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/transfer_server
+[8] How to Generate Terraform Providers - Speakeasy https://www.speakeasy.com/blog/how-to-build-terraform-providers
+[9] http (Data Source) - hashicorp - Terraform Registry https://registry.terraform.io/providers/hashicorp/http/latest/docs/data-sources/http
