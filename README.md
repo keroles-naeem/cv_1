@@ -270,3 +270,221 @@ If you want, I can write you a **drop‑in debug utility** that takes *any* `typ
 
 Do you want me to prepare that?
 
+give me the whole code with function and structure
+
+Alright — since you want **the whole working code** for your `additional_param` handling — including the Terraform Plugin Framework structs, schema, and both conversion functions — I’ll give you the complete self‑contained Go code ready to drop into your provider.  
+
+This will allow Terraform configs like:
+
+```hcl
+additional_param = {
+  sys_id    = "255b..."
+  "any key" = "any value"
+}
+```
+
+…to flow **TF → API → TF** without changing shape.
+
+***
+
+## 📄 **Full Example**
+
+```go
+package provider
+
+import (
+    "context"
+
+    "github.com/hashicorp/terraform-plugin-framework/diag"
+    "github.com/hashicorp/terraform-plugin-framework/resource"
+    "github.com/hashicorp/terraform-plugin-framework/schema"
+    "github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+//
+// -------------------
+// API Model
+// -------------------
+//
+type ApiModel struct {
+    // This matches your API payload exactly
+    AdditionalParam map[string]string `json:"AdditionalParam"`
+}
+
+//
+// -------------------
+// Terraform Model
+// -------------------
+//
+type MyResourceModel struct {
+    AdditionalParam types.Map `tfsdk:"additional_param"`
+}
+
+//
+// -------------------
+// Terraform Schema
+// -------------------
+//
+func (r *MyResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+    resp.Schema = schema.Schema{
+        Attributes: map[string]schema.Attribute{
+            "additional_param": schema.MapAttribute{
+                ElementType: types.StringType,
+                Required:    true, // or Optional: true
+                Description: "A map of arbitrary key-value strings to send to the API.",
+            },
+        },
+    }
+}
+
+//
+// -------------------
+// Conversion Functions
+// -------------------
+//
+
+// TF -> API
+func convertAdditionalParamToAPI(ctx context.Context, tfMap types.Map) (map[string]string, diag.Diagnostics) {
+    apiMap := make(map[string]string)
+    diags := tfMap.ElementsAs(ctx, &apiMap, false) // false = don't allow nulls
+    return apiMap, diags
+}
+
+// API -> TF
+func convertAdditionalParamToTFSdk(ctx context.Context, apiMap map[string]string) types.Map {
+    tfMap, _ := types.MapValueFrom(ctx, types.StringType, apiMap)
+    return tfMap
+}
+
+//
+// -------------------
+// Example Resource CRUD
+// -------------------
+//
+
+type MyResource struct {
+    client *MyAPIClient
+}
+
+func (r *MyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+    var plan MyResourceModel
+    diags := req.Plan.Get(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // TF -> API conversion
+    apiMap, diags := convertAdditionalParamToAPI(ctx, plan.AdditionalParam)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Call API
+    apiReq := ApiModel{AdditionalParam: apiMap}
+    apiResp, err := r.client.CreateResource(apiReq)
+    if err != nil {
+        resp.Diagnostics.AddError("API Error", err.Error())
+        return
+    }
+
+    // API -> TF conversion (store in state)
+    plan.AdditionalParam = convertAdditionalParamToTFSdk(ctx, apiResp.AdditionalParam)
+
+    // Save to state
+    diags = resp.State.Set(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+}
+
+func (r *MyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+    var state MyResourceModel
+    diags := req.State.Get(ctx, &state)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Call API
+    apiResp, err := r.client.GetResource()
+    if err != nil {
+        resp.Diagnostics.AddError("API Error", err.Error())
+        return
+    }
+
+    // API -> TF
+    state.AdditionalParam = convertAdditionalParamToTFSdk(ctx, apiResp.AdditionalParam)
+
+    // Save state
+    diags = resp.State.Set(ctx, &state)
+    resp.Diagnostics.Append(diags...)
+}
+
+func (r *MyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+    var plan MyResourceModel
+    diags := req.Plan.Get(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // TF -> API
+    apiMap, diags := convertAdditionalParamToAPI(ctx, plan.AdditionalParam)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    apiReq := ApiModel{AdditionalParam: apiMap}
+    apiResp, err := r.client.UpdateResource(apiReq)
+    if err != nil {
+        resp.Diagnostics.AddError("API Error", err.Error())
+        return
+    }
+
+    // API -> TF
+    plan.AdditionalParam = convertAdditionalParamToTFSdk(ctx, apiResp.AdditionalParam)
+
+    // Save state
+    diags = resp.State.Set(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+}
+
+func (r *MyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+    var state MyResourceModel
+    diags := req.State.Get(ctx, &state)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    apiMap, diags := convertAdditionalParamToAPI(ctx, state.AdditionalParam)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    err := r.client.DeleteResource(apiMap)
+    if err != nil {
+        resp.Diagnostics.AddError("API Error", err.Error())
+        return
+    }
+
+    // Terraform will remove it from state automatically after Delete returns
+}
+```
+
+***
+
+## 💡 How it works
+- **In Terraform config**: Any number of `key = value` pairs are allowed; keys can be quoted if needed.
+- **In Go**: Stored as `types.Map` in the TF model, converted to/from `map[string]string` for the API.
+- **In API**: Sent and received as a regular map in JSON (`object` type).
+- **Round‑trip safe**: Whatever user configures goes into state and comes back the same.
+
+***
+
+If you want, I can now add the **minimal `main.go` and provider registration** so you can compile this whole thing as a standalone Terraform provider and test it right away.  
+
+Do you want me to extend it with that?
+
