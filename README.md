@@ -649,3 +649,179 @@ If you want, I can rewrite your **whole API request builder** (`InstanceName`, `
 Do you want me to prepare that final corrected code?
 
 
+
+
+what it will be if we use additionalParamApiModel the whole code
+
+Got it — you want to see **the full working code** if we actually *do* introduce an `AdditionalParamApiModel` type, instead of just using `map[string]string`.  
+
+That means your API would expect something like this JSON structure:
+
+```json
+"AdditionalParam": {
+    "Key": "sys_id",
+    "Value": "255b..."
+}
+```
+…instead of a free‑form map.  
+So we’d make a small Go struct for that, and adjust the conversions accordingly.
+
+***
+
+## 1️⃣ API Model Types
+
+```go
+// The API uses a single key/value tuple
+type AdditionalParamApiModel struct {
+    Key   string `json:"Key"`
+    Value string `json:"Value"`
+}
+
+type ApiModel struct {
+    InstanceName     string                   `json:"InstanceName"`
+    MysqlVersion     string                   `json:"MysqlVersion"`
+    CaasRole         string                   `json:"CaasRole"`
+    StorageSize      int                      `json:"StorageSize"`
+    DomainJoin       bool                     `json:"DomainJoin"`
+    OrganisationUnit string                   `json:"OrganisationUnit"`
+    OwnedByGroup     GroupApiModel            `json:"OwnedByGroup"`
+    UsedByGroup      GroupApiModel            `json:"UsedByGroup"`
+    ManagedByGroup   GroupApiModel            `json:"ManagedByGroup"`
+    AdditionalParam  AdditionalParamApiModel  `json:"AdditionalParam"`
+    SupportedByGroup GroupApiModel            `json:"SupportedByGroup"`
+    Request          RequestApiModel          `json:"Request"`
+}
+```
+
+***
+
+## 2️⃣ Terraform Model
+
+In TF we still want the HCL to be:
+
+```hcl
+additional_param = {
+  sys_id = "255b..."
+}
+```
+
+…but because the API format supports only *one* key/value pair, in your TF **state model** you could either:
+
+- represent `additional_param` as a `map(string)` (and enforce only one key in validation), or  
+- represent it directly as two `string` attributes (`key` and `value`).
+
+Here, I’ll keep `map(string)` so your HCL is unchanged:
+
+```go
+type MyResourceModel struct {
+    AdditionalParam types.Map `tfsdk:"additional_param"`
+}
+```
+
+***
+
+## 3️⃣ Conversion Functions
+
+### TF → API (map → key/value struct)
+Because your map will only have one entry:
+
+```go
+func convertAdditionalParamToAPI(ctx context.Context, tfMap types.Map) (AdditionalParamApiModel, diag.Diagnostics) {
+    apiModel := AdditionalParamApiModel{}
+    goMap := make(map[string]string)
+
+    diags := tfMap.ElementsAs(ctx, &goMap, false)
+    if diags.HasError() {
+        return apiModel, diags
+    }
+
+    // Take first key/value from the map
+    for k, v := range goMap {
+        apiModel.Key = k
+        apiModel.Value = v
+        break
+    }
+    return apiModel, diags
+}
+```
+
+***
+
+### API → TF (key/value struct → map)
+```go
+func convertAdditionalParamFromAPI(ctx context.Context, apiModel AdditionalParamApiModel) (types.Map, diag.Diagnostics) {
+    m := map[string]string{
+        apiModel.Key: apiModel.Value,
+    }
+    tfMap, diags := types.MapValueFrom(ctx, types.StringType, m)
+    return tfMap, diags
+}
+```
+
+***
+
+## 4️⃣ Example usage in a Resource Create
+
+```go
+func (r *MyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+    var plan MyResourceModel
+    diags := req.Plan.Get(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Convert AdditionalParam: TF -> API
+    addParamApi, diags := convertAdditionalParamToAPI(ctx, plan.AdditionalParam)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Build API request
+    apiReq := ApiModel{
+        InstanceName:     plan.InstanceName.ValueString(),
+        MysqlVersion:     plan.MysqlVersion.ValueString(),
+        CaasRole:         plan.CaasRole.ValueString(),
+        StorageSize:      int(plan.StorageSize.ValueInt64()),
+        DomainJoin:       plan.DomainJoin.ValueBool(),
+        OrganisationUnit: plan.OrganisationUnit.ValueString(),
+        OwnedByGroup:     convertGroupToApiModel(plan.OwnedByGroup),
+        UsedByGroup:      convertGroupToApiModel(plan.UsedByGroup),
+        ManagedByGroup:   convertGroupToApiModel(plan.ManagedByGroup),
+        AdditionalParam:  addParamApi, // key/value struct
+        SupportedByGroup: convertGroupToApiModel(plan.SupportedByGroup),
+        Request:          convertRequestToApiModel(plan.Request),
+    }
+
+    // Call Create API
+    apiResp, err := r.client.CreateResource(apiReq)
+    if err != nil {
+        resp.Diagnostics.AddError("API Error", err.Error())
+        return
+    }
+
+    // API -> TF conversion for AdditionalParam
+    plan.AdditionalParam, diags = convertAdditionalParamFromAPI(ctx, apiResp.AdditionalParam)
+    resp.Diagnostics.Append(diags...)
+
+    diags = resp.State.Set(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+}
+```
+
+***
+
+## 5️⃣ Key Differences from `map[string]string` version
+
+- `AdditionalParam` in API model is now a **struct** with exactly one `Key` and `Value`.
+- The conversion functions wrap/unwrap between `map(string)` (Terraform) and `AdditionalParamApiModel` (API).
+- This means **Terraform can still configure it as `{ key = "value" }`**, but your Go code enforces that only one is sent to the API.
+
+***
+
+If you want, I can also give you the **matching `Read()` method** so API → TF is handled in the same style — that way the round‑trip between TF config ↔ API JSON will work perfectly with this `AdditionalParamApiModel` design.
+
+Do you want me to include that full `Read()` example?
+
+
