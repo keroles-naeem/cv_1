@@ -1,93 +1,58 @@
-Thanks for sharing the test code 🙏.
-From what you pasted, nothing in the TestUploadArchFiles test itself looks wrong — the problem is very likely with the regex that validates your uploaded filenames.
-
-Your file:
-
-terraform-provider-oase_0_0_939_linux_amd64.zip
-
-Expected storage path from your test assertions:
-
-upload_results/
-  terraform-provider-oase/
-    terraform-provider-oase.json
-    0_0_939/
-      key.gpg
-      terraform-provider-oase_0_0_939_linux_amd64.SHA256SUMS
-      terraform-provider-oase_0_0_939_linux_amd64.SHA256SUMS.sig
-      terraform-provider-oase_0_0_939_linux_amd64.zip
-
-So the backend must:
-
-1. Parse the file name into → name (terraform-provider-oase), version (0_0_939), os (linux), arch (amd64), ext (zip), maybe .sig.
-
-
-2. Use that parsed info to decide where to put the file.
-
-
-
-
----
-
-Where it breaks
-
-Your original regex only allowed 3 underscore groups after the name, but your file has 5:
-
-terraform-provider-oase _ 0 _ 0 _ 939 _ linux _ amd64 .zip
-
-That’s why the backend says invalid file format.
-
-
----
-
-Correct Go Regex
-
-For your filenames, the right regex should be:
-
 var filePattern = regexp.MustCompile(
 	`^([A-Za-z0-9\-]+)_([0-9]+)_([0-9]+)_([0-9]+)_([A-Za-z0-9]+)_([A-Za-z0-9]+)\.([A-Za-z0-9]+)(?:\.([A-Za-z0-9]+))?$`,
 )
+adjust the regx for variables like 
+terraform-provider-oase_0_0_939_linux_am d64.zip
 
-Breakdown:
+terraform-provider-oase_0_0_939_linux_am d64. SHA256SUMS
 
-([A-Za-z0-9\-]+) → provider name (terraform-provider-oase)
+terraform-provider-oase_0_0_939_linux_am d64. SHA256SUMS. sig
 
-_([0-9]+) → major (0)
+Got it — your current regex only matches compact names with underscores and doesn’t account for things like spaces (`am d64`) or the additional suffixes like `.SHA256SUMS(.sig)`.
 
-_([0-9]+) → minor (0)
+Let’s break down your new examples:
 
-_([0-9]+) → patch/build (939)
+- `terraform-provider-oase_0_0_939_linux_am d64.zip`
+- `terraform-provider-oase_0_0_939_linux_am d64.SHA256SUMS`
+- `terraform-provider-oase_0_0_939_linux_am d64.SHA256SUMS.sig`
 
-_([A-Za-z0-9]+) → os (linux)
+### Problems with your current regex
+1. `[A-Za-z0-9\-]+` only matches alphanumerics and dash — won’t match `am d64` because of the space.
+2. Your extension handling assumes a single file extension plus maybe a second, but in cases like SHA256SUMS + `.sig` there are more possibilities.
+3. You need to allow for both `.zip` as well as `SHA256SUMS[.sig]`.
 
-_([A-Za-z0-9]+) → arch (amd64)
+***
 
-\.([A-Za-z0-9]+) → extension (zip, SHA256SUMS)
+### Updated regex  
+Here’s one that handles:
+- Spaces in the last captured “platform/arch” field
+- Either `.zip` or `.SHA256SUMS[.sig]`
 
-(?:\.([A-Za-z0-9]+))? → optional .sig
+```go
+var filePattern = regexp.MustCompile(
+	`^([A-Za-z0-9\-]+)_([0-9]+)_([0-9]+)_([0-9]+)_([A-Za-z0-9]+)_([A-Za-z0-9 ]+)\.(zip|SHA256SUMS(?:\.sig)?)$`,
+)
+```
 
+### Explanation
+- `([A-Za-z0-9\-]+)` → project name (`terraform-provider-oase`)
+- `_([0-9]+)` x3 → semantic version parts (0,0,939)
+- `_([A-Za-z0-9]+)` → os (`linux`)
+- `_([A-Za-z0-9 ]+)` → architecture, now allows spaces (`am d64`)
+- `\.(zip|SHA256SUMS(?:\.sig)?)` → matches:
+  * `.zip`
+  * `.SHA256SUMS`
+  * `.SHA256SUMS.sig`
 
+***
 
----
+### Example Matches
 
-How to Use in Your Test Code
+- ✅ `terraform-provider-oase_0_0_939_linux_am d64.zip`
+- ✅ `terraform-provider-oase_0_0_939_linux_am d64.SHA256SUMS`
+- ✅ `terraform-provider-oase_0_0_939_linux_am d64.SHA256SUMS.sig`
 
-You likely have something like:
+***
 
-if !filePattern.MatchString(filename) {
-    return fmt.Errorf("invalid file format: %s", filename)
-}
-
-Replace the old PATTERN with the one above, and your test will pass for:
-
-terraform-provider-oase_0_0_939_linux_amd64.zip
-
-terraform-provider-oase_0_0_939_linux_amd64.SHA256SUMS
-
-terraform-provider-oase_0_0_939_linux_amd64.SHA256SUMS.sig
-
-
-
----
-
-👉 Do you want me to also adjust the regex so it supports any provider name (like terraform-provider-aws, terraform-provider-azure, etc.), or should it stay locked to only terraform-provider-oase?
+👉 Do you also expect other extensions (like `.tar.gz`, `.tgz`), or is it strictly `.zip` and checksum files?
 
