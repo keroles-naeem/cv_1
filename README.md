@@ -93,3 +93,87 @@ func TestUploadArchFiles(t *testing.T) {
 
 	os.RemoveAll(uploadPath)
 }
+
+Perfect, thanks for posting the error log + the test.  
+The root symptom is visible here in your logs:
+
+```
+WARN Unexpected file type encountered filename=terraform-provider-oase_0_0_939_linux_amd64.zip
+```
+
+That means your **regex** (or file type detection function) did not recognize `.zip`, `.SHA256SUMS` or `.SHA256SUMS.sig` as valid artifacts.  
+Because of that, the handler stored them into a wrong directory (`.../0/`) instead of per-version (`.../0_0_939/`), and the later `assert.True(checkFileExist(...))` failed.
+
+***
+
+### Why it fails
+
+Looking back at your test:
+
+```go
+assert.True(t, checkFileExist(uploadPath+"terraform-provider-oase/terraform-provider-oase.json"))
+assert.True(t, checkFileExist(uploadPath+"terraform-provider-oase/0_0_939/key.gpg"))
+assert.True(t, checkFileExist(uploadPath+"terraform-provider-oase/0_0_939/terraform-provider-oase_0_0_939_linux_amd64.SHA256SUMS"))
+assert.True(t, checkFileExist(uploadPath+"terraform-provider-oase/0_0_939/terraform-provider-oase_0_0_939_linux_amd64.SHA256SUMS.sig"))
+assert.True(t, checkFileExist(uploadPath+"terraform-provider-oase/0_0_939/terraform-provider-oase_0_0_939_linux_amd64.zip"))
+```
+
+But your server log shows files were being written to:
+
+```
+../../test-data/upload_results/terraform-provider-oase/0/...
+```
+
+instead of:
+
+```
+../../test-data/upload_results/terraform-provider-oase/0_0_939/...
+```
+
+So:  
+- The regex failed, couldn’t parse the version correctly, defaulted to `0`.
+- That’s why you got `.../0/` instead of `.../0_0_939/`.
+- The test checks `0_0_939/...`, file not found → `assert.True` failed.
+
+***
+
+### Fix
+
+You need to update your **filename regex parser** to correctly handle the `.zip`, `.SHA256SUMS`, `.SHA256SUMS.sig` cases.  
+Here’s an adjusted Go regex pattern:
+
+```go
+var filePattern = regexp.MustCompile(
+	`^([A-Za-z0-9\-]+)_([0-9]+)_([0-9]+)_([0-9]+)_([A-Za-z0-9]+)_([A-Za-z0-9]+)\.(zip|SHA256SUMS(?:\.sig)?)$`,
+)
+```
+
+- `[A-Za-z0-9\-]+` → matches provider name (`terraform-provider-oase`)
+- `_([0-9]+)_([0-9]+)_([0-9]+)` → matches `0_0_939`
+- `_([A-Za-z0-9]+)` → OS (`linux`)
+- `_([A-Za-z0-9]+)` → arch (`amd64`, `arm64`, etc.)
+- `\.(zip|SHA256SUMS(?:\.sig)?)` → matches `.zip`, `.SHA256SUMS` and `.SHA256SUMS.sig`
+
+If you also need to allow spaces (like your earlier `am d64` typo), you can use:
+
+```go
+([A-Za-z0-9 ]+)
+```
+
+for the last group instead of `([A-Za-z0-9]+)`.
+
+***
+
+### Next Steps
+
+1. Update the regex in your upload service to the one above.  
+2. Re-run `TestUploadArchFiles`.  
+   - Files should now be recognized, and placed under `terraform-provider-oase/0_0_939/...`.  
+   - The `assert.True(...)` checks will pass.  
+
+***
+
+👉 So the failure isn’t in the **test** — it’s the regex being too strict and rejecting your valid artifact names.  
+
+Do you want me to rewrite your **file parsing function** in full Go code (so you can just drop it in), instead of only giving the regex?
+
