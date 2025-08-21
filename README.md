@@ -1,113 +1,49 @@
+VERSION:=v0.0.0-local
+default: testacc
 
-You’ve built, zipped, SHA256SUMed, and uploaded all the provider artifacts for multiple OS/arch/versions successfully—**but in the e2e-test step, OpenTofu complains:**
-```
-Provider tfp.entw.oase.itz.itzbund.net/nearcloud/oase v3924.0.0 does not have a package available for your current platform, linux_amd64.
-...
-│ Incompatible provider version
-```
-### What’s happening?
+# Run acceptance tests
+.PHONY: format testacc
+testacc:
+	TF_ACC=1 go test ./... -v $(TESTARGS) -timeout 120m
+fmt: 
+	@gofmt -w -s .
+check:
+	@revive -formatter unix ./...
+install:
+	@go install .
 
-1. **Build and upload worked:**  
-   Your `curl` command posted these files (for version `0_0_3987`) to your registry:
-   - terraform-provider-oase_0_0_3987_linux_amd64.zip
-   - terraform-provider-oase_0_0_3987_linux_amd64.SHA256SUMS
-   - terraform-provider-oase_0_0_3987_linux_amd64.SHA256SUMS.sig
-   - key.gpg
+clean:
+	rm -fr bin/ .tmp/
 
-2. **But tofu tried to install v3924.0.0** (that’s the provider version OpenTofu is seeking). Your local build/upload is `0_0_3987`, not `3924.0.0`.
+#? build: build binary for current system
+build: bin/current_system/terraform-provider-oase_$(VERSION)
 
-3. **No matching artifacts for v3924.0.0** in the registry for platform `linux_amd64`—hence, “no package available”.
+#? run: run plugin
+run: build
+	bin/current_system/terraform-provider-oase
 
-***
+bin/current_system/terraform-provider-oase_%:  GOARGS =
+bin/darwin_amd64/terraform-provider-oase_%:  GOARGS = GOOS=darwin GOARCH=amd64
+bin/linux_amd64/terraform-provider-oase_%:  GOARGS = GOOS=linux GOARCH=amd64
+bin/linux_386/terraform-provider-oase_%:  GOARGS = GOOS=linux GOARCH=386
+bin/linux_arm/terraform-provider-oase_%:  GOARGS = GOOS=linux GOARCH=arm
+bin/windows_amd64/terraform-provider-oase_%:  GOARGS = GOOS=windows GOARCH=amd64
+bin/windows_386/terraform-provider-oase_%:  GOARGS = GOOS=windows GOARCH=386
 
-## Diagnosis
+bin/%/terraform-provider-oase_$(VERSION): clean
+	$(GOARGS) CGO_ENABLED=0 go build -o $@ -ldflags="-s -w" .
 
-### **Your build/upload version ≠ the version OpenTofu wants**
+bin/release/terraform-provider-oase_%.zip: NAME=terraform-provider-oase_$(VERSION)_$*
+bin/release/terraform-provider-oase_%.zip: DEST=bin/release/$(VERSION)/$(NAME)
+bin/release/terraform-provider-oase_%.zip: bin/%/terraform-provider-oase_$(VERSION)
+	mkdir -p $(DEST)
+	cp bin/$*/terraform-provider-oase_$(VERSION) $(DEST)
+	cd $(DEST) && zip -r ../$(NAME).zip . && cd .. && sha256sum $(NAME).zip > $(NAME).SHA256SUMS && rm -rf $(NAME)
 
-- **Build/uploaded version:**  
-  `${VERSION_PIP_ID}` = `0_0_${CI_PIPELINE_ID}` = `0_0_3987` (latest run)
-
-- **OpenTofu wants:**  
-  `v3924.0.0` (this is not the same as any `${VERSION_PIP_ID}`!)
-
-***
-
-### Why is tofu requesting v3924.0.0?
-
-- Your registry’s `/v1/providers/nearcloud/oase/versions` endpoint returns `["3924.0.0", ...]` (maybe from an earlier run).
-- Tofu asks for `v3924.0.0`, not your new artifact (`0_0_3987`).
-
-### But you are building and uploading `0_0_3987`, not `3924.0.0`.  
-Terraform/OpenTofu doesn’t know about your `_` separated format—it expects [semantic versioning](https://semver.org/) like `1.2.3`.
-
-***
-
-## **How to Fix This**
-
-### 1. **Align your build version with SemVer (and match what tofu expects):**
-
-- Instead of exporting `VERSION_PIP_ID="0_0_${CI_PIPELINE_ID}"`,  
-  **export** `VERSION_PIP_ID="${CI_PIPELINE_ID}.0.0"` **(or similar, based on what versioning your registry and tofu expects)**
-
-  Example:
-  - If `CI_PIPELINE_ID=3987`, use `3987.0.0`
-  - Your artifacts would be:
-    - `terraform-provider-oase_3987.0.0_linux_amd64.zip` etc.
-
-- **Update build, package, upload, and registry logic accordingly.**
-
-### 2. **Ensure registry index returns correct versions:**
-
-- Your registry should publish exactly the SemVer-style versions tofu expects, e.g.,
-  - `/v1/providers/nearcloud/oase/versions` must show recent versions like `"3987.0.0"`, not `"0_0_3987"`.
-
-### 3. **Do not use underscores in version numbers for provider registries:**  
-  - Use only dots and follow the [Terraform Provider Protocol](https://www.terraform.io/internals/provider-registry-protocol).
-
-### 4. **Make artifact filenames match:**  
-  - Must match:  
-    `terraform-provider-<NAME>_<VERSION>_<OS>_<ARCH>.zip`
-
-  Example:  
-  `terraform-provider-oase_3987.0.0_linux_amd64.zip`
-
-***
-
-## **Summary Table**
-
-| Component    | Current           | Should be      |
-|--------------|-------------------|---------------|
-| Build ver    | 0_0_3987          | 3987.0.0      |
-| Artifact name| ..._0_0_3987_...  | ..._3987.0.0_... |
-| Registry     | /v1/providers/.../versions includes 3924.0.0 | .../versions includes 3987.0.0 |
-| tofu expects | v3924.0.0         | v3987.0.0     |
-
-***
-
-## **Action Plan (Do This!):**
-
-1. **Switch to true SemVer in version and filenames:**
-   - Set `VERSION_PIP_ID="${CI_PIPELINE_ID}.0.0"`
-   - All build/upload logic uses this version.
-2. **Clean up old registry artifacts if needed (to avoid bogus versions showing up in `/versions`).**
-3. **Re-run your pipeline.**
-4. **e2e-test will pass when tofu finds the right version for your platform.**
-
-***
-
-**Tip:**  
-If you must automate this via CI, do something like:
-
-```bash
-export CI_MAJOR=${CI_PIPELINE_ID}
-export CI_MINOR=0
-export CI_PATCH=0
-export VERSION_PIP_ID="${CI_MAJOR}.${CI_MINOR}.${CI_PATCH}"
-```
-
-And update all places in your build/upload to use this `${VERSION_PIP_ID}`.
-
-***
-
-Let me know if you want a code/Makefile or script snippet for this versioning fix!
-
+release: \
+	bin/release/terraform-provider-oase_darwin_amd64.zip \
+	bin/release/terraform-provider-oase_linux_amd64.zip \
+	bin/release/terraform-provider-oase_linux_386.zip \
+	bin/release/terraform-provider-oase_linux_arm.zip \
+	bin/release/terraform-provider-oase_windows_amd64.zip \
+	bin/release/terraform-provider-oase_windows_386.zip
