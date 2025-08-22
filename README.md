@@ -124,3 +124,115 @@ build:
 	
 clean:
 	@rm -fr build
+
+Below is a complete solution to automate **provider artifact versioning, naming, and upload** for a Terraform provider in your GitLab CI/CD, integrated with your `Makefile` and pipeline stages. This ensures every run produces the correct SemVer-formatted ZIPs (e.g. `terraform-provider-oase_3924.0.0_linux_amd64.zip`) and reliably uploads them for registry use.
+
+***
+
+## 1. Add Provider Build & Release Steps to GitLab CI
+
+Add these jobs after your existing build jobs in your `.gitlab-ci.yml`:
+
+```yaml
+build-provider:
+  stage: build
+  image: golang:1.22
+  before_script:
+    - apt-get update && apt-get install -y zip
+  script:
+    - export PROVIDER_VERSION="${CI_PIPELINE_ID}.0.0"
+    - echo "Building provider version $PROVIDER_VERSION"
+    - mkdir -p bin/release/$PROVIDER_VERSION
+    # Build for each target platform
+    - |
+      for osarch in \
+        "linux amd64" "linux 386" "linux arm" \
+        "darwin amd64" "windows amd64" "windows 386"
+      do
+        set -- $osarch
+        OS=$1 ; ARCH=$2
+        BIN="terraform-provider-oase_${PROVIDER_VERSION}_${OS}_${ARCH}"
+        OUTPATH="bin/release/$PROVIDER_VERSION/$BIN"
+        GOOS=$OS GOARCH=$ARCH CGO_ENABLED=0 go build -o "$OUTPATH"
+        cd "bin/release/$PROVIDER_VERSION"
+        zip "${BIN}.zip" "$BIN"
+        sha256sum "${BIN}.zip" > "${BIN}.SHA256SUMS"
+        rm "$BIN"
+        cd -
+      done
+  artifacts:
+    paths:
+      - bin/release/
+    expire_in: 1 hour
+  tags:
+    - golang
+    - env:dev
+
+upload-provider:
+  stage: deploy
+  image: curlimages/curl:latest
+  script:
+    - export PROVIDER_VERSION="${CI_PIPELINE_ID}.0.0"
+    - cd bin/release/$PROVIDER_VERSION
+    - ls -lh
+    # Upload all ZIPs and SHA256SUMS for each OS/ARCH
+    - |
+      for f in terraform-provider-oase_${PROVIDER_VERSION}_*.zip; do
+        base="${f%.zip}"
+        curl -k --location 'https://tfp.entw.oase.itz.itzbund.net/upload' \
+          -F "files=@$f" \
+          -F "files=@${base}.SHA256SUMS"
+      done
+  dependencies:
+    - build-provider
+  tags:
+    - bash
+    - env:dev
+```
+
+***
+
+## 2. Update Your Makefile (if needed)
+
+If you want to call builds locally with the same version scheme, update/add:
+
+```makefile
+# Add to top if not already present
+PROVIDER_VERSION ?= $(shell echo $${CI_PIPELINE_ID}.0.0)
+
+build-provider:
+	mkdir -p bin/release/$(PROVIDER_VERSION)
+	@for osarch in "linux amd64" "linux 386" "linux arm" "darwin amd64" "windows amd64" "windows 386"; do \
+	  set -- $$osarch; \
+	  OS=$$1 ; ARCH=$$2 ; \
+	  BIN="terraform-provider-oase_$(PROVIDER_VERSION)_$${OS}_$${ARCH}"; \
+	  OUTPATH="bin/release/$(PROVIDER_VERSION)/$$BIN"; \
+	  GOOS=$$OS GOARCH=$$ARCH CGO_ENABLED=0 go build -o "$$OUTPATH"; \
+	  cd "bin/release/$(PROVIDER_VERSION)"; \
+	  zip "$$BIN.zip" "$$BIN"; \
+	  sha256sum "$$BIN.zip" > "$$BIN.SHA256SUMS"; \
+	  rm "$$BIN"; \
+	  cd -; \
+	done
+```
+Call with `make build-provider` with the appropriate `PROVIDER_VERSION`.
+
+***
+
+## 3. Pipeline Flow
+
+- If you run the pipeline with `CI_PIPELINE_ID=3924`, you will get:
+  - `terraform-provider-oase_3924.0.0_linux_amd64.zip`
+  - And associated SHA256SUMS, for each platform/arch.
+- Each file is named **precisely** as Terraform/Tofu expects.
+- All are uploaded automatically right after building.
+- If your registry exposes `/v1/providers/nearcloud/oase/versions`, it will now show and resolve the new version properly, and Terraform will download the correct ZIP.
+
+***
+
+**You can now remove any other custom or manual artifact build/upload logic from your pipeline, as this covers all use cases for provider artifact distribution!**
+
+If you need the upload to also sign SHA256SUMS, that can be automated by extending the `build-provider` script (let me know if needed).
+
+Let me know if you want a full .gitlab-ci.yml example or have special security/upload requirements!
+
