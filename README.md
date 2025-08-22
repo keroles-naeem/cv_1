@@ -1,84 +1,126 @@
-yes
+apply them.
+gitlab-ci
+stages: 
+  - check
+  - test
+  - build
+  - container
+  - deploy
 
-Here is a straightforward way to automate consistent provider versioning, artifact naming, and uploading in your CI/CD pipeline.
+variables:
+  COMPONENT_NAME: "$CI_PROJECT_NAME"
 
-***
+workflow:
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_JOB_MANUAL
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 
-## 1. Set the Provider Version Dynamically
+.job_rules: &job_rules
+  - if: $CI_COMMIT_BRANCH == "develop"
+  - if: $CI_COMMIT_BRANCH == "main"
+  - if: $CI_COMMIT_BRANCH =~ "/^release/"
+  - if: $CI_COMMIT_BRANCH =~ "/^hotfix/"
+  - if: $CI_COMMIT_BRANCH =~ "/^feature/"
+check:
+  stage: check 
+  script:
+    - go install github.com/mgechev/revive@v1.6.0
+    - export PATH="${PATH}:$(go env GOPATH)/bin"
+    - make check
+  tags:
+    - golang
+    - env:dev
+test:
+  stage: test
+  image: 
+    name: registry.gitlab.itsm-suite.service.itzbund.net/oase/container-deployment/golang:1.24.2-bullseye
+  script: echo "Image Done."
+  tags:
+    - golang
+    - env:dev
 
-**Add this to the setup of your CI job** (e.g. `.gitlab-ci.yml` or your build script):
+build-job:
+  stage: build
+  tags:
+    - golang
+    - env:dev
+  script:
+    - apt-get update 
+    - go version  
+    - go install
+    - go install gotest.tools/gotestsum@v1.12.2
+    - go install github.com/t-yuki/gocover-cobertura@latest
+    - gotestsum --junitfile report.xml --format testname -- -race -coverprofile=coverage.txt -covermode atomic ./...
+    - gocover-cobertura < coverage.txt > coverage.xml
+    - go tool cover -func coverage.txt
+  coverage: '/total:.*\d+.\d+%/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+      junit: report.xml
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - /go/pkg/mod/
+      - /go/bin/
 
-```bash
-export PROVIDER_VERSION="${CI_PIPELINE_ID}.0.0"
-export PROVIDER_VERSION_SHORT="${CI_PIPELINE_ID}"
-```
+build-podman-image:
+  stage: container
+  variables:
+    REGISTRY: "registry.gitlab.itsm-suite.service.itzbund.net:443/oase/tp-registry"
+  script:
+    - echo "Building podman image for version ${CI_PIPELINE_ID}"
+    - echo "$CI_REGISTRY_PASSWORD" | podman login --verbose "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+    - podman build --dns=7.7.7.7 --dns=7.7.7.8 --build-arg HTTP_PROXY="http://10.130.165.20:3128" --build-arg HTTPS_PROXY="http://10.130.165.20:3128" -t "${REGISTRY}:${CI_PIPELINE_ID}" -t "${REGISTRY}:latest" .
+    - podman push "${REGISTRY}:${CI_PIPELINE_ID}"
+    - podman push "${REGISTRY}:latest"
+  needs:
+    - build-job
+  tags:
+    - bash
+    - env:dev
+development:
+  stage: deploy
+  tags:
+    - bash
+    - env:dev
+  script:
+    - systemctl --user daemon-reload
+    - systemctl --user restart container-tp-registry
+    # - curl --request POST --form ref=dev --form token=$CI_JOB_TOKEN --form variables[COMPONENT_VERSION]=$CI_PIPELINE_ID \
+    #         --form variables[COMPONENT_NAME]=$CI_PROJECT_NAME https://gitlab.itsm-suite.service.itzbund.net/api/v4/projects/186/trigger/pipeline
 
-***
 
-## 2. Update Your Makefile or Build Script
+--------------------------------------------------------------------------------
+makefile
+ PROJECT_NAME := "tp-registry"
 
-Build and package the provider for each platform with exact Terraform conventions:
+.PHONY: all dep check build test race 
 
-```makefile
-# Assuming PROVIDER_VERSION is exported from CI/job
-NAME=terraform-provider-oase
-VERSION=$(PROVIDER_VERSION)
+all: check test race build
 
-PLATFORMS = linux_amd64 linux_386 linux_arm darwin_amd64 windows_amd64 windows_386
+check:
+	@revive -formatter unix ./...
 
-release: $(PLATFORMS:%=bin/release/$(NAME)_$(VERSION)_%)
-    @echo "All builds complete."
+test:
+	@go tool cover --func=cover.out|grep total                           
+	@go test -v -coverprofile=cover.out --coverpkg=$(go list .)/... ./...
 
-bin/release/$(NAME)_$(VERSION)_%: bin/%/$(NAME)_$(VERSION)
-	mkdir -p bin/release/$(VERSION)
-	cp bin/$*/$(NAME)_$(VERSION) bin/release/$(VERSION)/
-	cd bin/release/$(VERSION) && zip -r $(NAME)_$(VERSION)_$*.zip $(NAME)_$(VERSION)
-	cd bin/release/$(VERSION) && sha256sum $(NAME)_$(VERSION)_$*.zip > $(NAME)_$(VERSION)_$*.SHA256SUMS
-	cd bin/release/$(VERSION) && rm $(NAME)_$(VERSION)
-```
+race: dep
+	CGO_ENABLED=1 go test -race -short ./...
 
-*Adjust as needed for your structure.*
+dep: 
+	@go get -v -d ./...
 
-***
-
-## 3. Script for CI: Build, Upload, and Register
-
-In your pipeline (shell or script step):
-
-```bash
-export PROVIDER_VERSION="${CI_PIPELINE_ID}.0.0"
-
-make clean
-make release PROVIDER_VERSION=$PROVIDER_VERSION
-
-# Loop over platforms for upload (add/remove as needed)
-for plat in linux_amd64 linux_386 linux_arm darwin_amd64 windows_amd64 windows_386; do
-  ZIP="bin/release/${PROVIDER_VERSION}/terraform-provider-oase_${PROVIDER_VERSION}_${plat}.zip"
-  SUM="bin/release/${PROVIDER_VERSION}/terraform-provider-oase_${PROVIDER_VERSION}_${plat}.SHA256SUMS"
-  [ -f "$ZIP" ] && curl -k --location 'https://tfp.entw.oase.itz.itzbund.net/upload' \
-    -F "files=@${ZIP}" -F "files=@${SUM}" -F "gpg-key=@bin/release/${PROVIDER_VERSION}/key.gpg"
-done
-```
-
-***
-
-## 4. Registry Index (Metadata/JSON)
-
-Your registry’s index or metadata file (e.g. `terraform-provider-oase.json`) must list `PROVIDER_VERSION`, and each download endpoint for `/v1/providers/.../download/linux/amd64` must resolve to the corresponding ZIP for that version and platform.
-
-***
-
-## 5. Result: Each pipeline run will produce artifacts like:
-
-```
-terraform-provider-oase_3924.0.0_linux_amd64.zip
-terraform-provider-oase_3924.0.0_linux_amd64.SHA256SUMS
-```
-…for each platform.
-
-***
-
-**With these conventions, Terraform or OpenTofu will always find your latest published version when you run `init` with a matching version.**
-
-Let me know if you want more specifics for a GitLab, GitHub, or other CI system, or an end-to-end script!
-
+build:
+	CGO_ENABLED=1 go build -o build/ ./...
+	
+clean:
+	@rm -fr build
