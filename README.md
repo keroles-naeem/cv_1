@@ -155,3 +155,114 @@ release: \
 	bin/release/terraform-provider-oase_linux_arm.zip \
 	bin/release/terraform-provider-oase_windows_amd64.zip \
 	bin/release/terraform-provider-oase_windows_386.zip
+
+To apply the necessary fixes for your CI pipeline and Makefile to produce properly versioned Terraform provider artifacts that Terraform/OpenTofu expects, you should:
+
+## 1. Change your pipeline variables and usage:
+
+Replace your existing:
+```yaml
+variables:
+  VERSION_PIP_ID: "0_0_${CI_PIPELINE_ID}"
+```
+with a semver-compatible variable, for example:
+```yaml
+variables:
+  VERSION_PIP_ID: "${CI_PIPELINE_ID}.0.0"
+```
+This produces a version like `3924.0.0` instead of `0_0_3924`, aligning with Terraform semantic version expectations.
+
+***
+
+## 2. Update your Makefile VERSION variable:
+
+Change the `VERSION` in your Makefile to use the CI variable:
+
+Replace:
+```makefile
+VERSION:=v0.0.0-local
+```
+with:
+```makefile
+VERSION ?= v$(VERSION_PIP_ID)
+```
+This way, `make release` uses version like `v3924.0.0`.
+
+***
+
+## 3. Adjust your Makefile targets to use the `VERSION` variable consistently:
+
+Make sure the build and release targets produce files named exactly:
+```
+terraform-provider-oase_v3924.0.0_linux_amd64.zip
+```
+for example.
+
+Your existing rules:
+
+```makefile
+bin/current_system/terraform-provider-oase_%:  GOARGS =
+bin/darwin_amd64/terraform-provider-oase_%:  GOARGS = GOOS=darwin GOARCH=amd64
+bin/linux_amd64/terraform-provider-oase_%:  GOARGS = GOOS=linux GOARCH=amd64
+...
+bin/%/terraform-provider-oase_$(VERSION): clean
+	$(GOARGS) CGO_ENABLED=0 go build -o $@ -ldflags="-s -w" .
+```
+
+will work if `$(VERSION)` is set correctly as noted.
+
+***
+
+## 4. Sample adjusted `.gitlab-ci.yml` snippet for the install stage:
+
+```yaml
+install:
+  stage: install
+  script:
+    - apt-get update
+    - apt-get install -y zip
+    - export VERSION_PIP_ID="${CI_PIPELINE_ID}.0.0" 
+    - export VERSION="v${VERSION_PIP_ID}"
+    - echo "Building version ${VERSION}"
+    - make release VERSION=${VERSION}
+    - cp sign_files.sh bin/release/${VERSION}/
+    - gpg --import $key
+    - gpg --list-secret-keys
+    - cd bin/release/${VERSION}/ && gpg --armor --export ci/cd > key.gpg
+    - sh sign_files.sh && rm sign_files.sh
+  artifacts:
+    paths:
+      - bin/release
+    expire_in: 1 hour
+```
+
+***
+
+## 5. Sample adjusted `push-to-terraform-registry` job:
+
+```yaml
+push-to-terraform-registry:
+  stage: distribute
+  dependencies:
+    - install
+  script:
+    - echo $VERSION
+    - curl -k --location 'https://tfp.entw.oase.itz.itzbund.net/upload' \
+      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.SHA256SUMS" \
+      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.SHA256SUMS.sig" \
+      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.zip" \
+      -F "gpg-key=@bin/release/${VERSION}/key.gpg"
+```
+
+***
+
+## Summary
+
+- Use **dot-separated semver version strings**: `3924.0.0`
+- Use that version string everywhere consistently in build, package, upload
+- Update pipeline variables and Makefile accordingly
+
+This ensures Terraform/OpenTofu will find the matching `zip` files for requested versions/platforms, fixing the “package not available” error.
+
+Let me know if you want me to generate a full updated `Makefile` or `.gitlab-ci.yml` for your project applying these changes!
+
