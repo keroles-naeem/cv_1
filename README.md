@@ -1,128 +1,71 @@
-func (uploadService UploadService) initMetaContainer(c *gin.Context, metaFileName, version, versionPath string) (VersionsContainer, error) {
-	jsonFile, err := os.Open(metaFileName)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return VersionsContainer{}, nil
-		}
-		c.String(http.StatusBadRequest, "got meta file parse / open err: %s", err.Error())
-		return VersionsContainer{}, err
-	}
 
-	defer jsonFile.Close()
 
-	byteValue, err := io.ReadAll(jsonFile)
-	if err != nil {
-		return VersionsContainer{}, err
-	}
+Your test is failing because the version sorting (in `cleanUpLowerVersion`) relies on numeric comparison via `strconv.Atoi`, but your version strings use underscores (`0_0_10`, `0_0_2`, etc.), and the test’s logic for expected results assumes a certain sorted order. This is causing both the wrong version to be left after cleanup and, eventually, an index out of range panic when you assert at e.g., `versions[1]` after deletion has shrunk the slice.
 
-	var versionsContainer VersionsContainer
-	err = json.Unmarshal(byteValue, &versionsContainer)
-	if err != nil {
-		return VersionsContainer{}, err
-	}
+## Why you got this failure
 
-	vi := -1
-	for i, item := range versionsContainer.Versions {
-		if item.Version == version {
-			vi = i
-		}
-	}
+- When sorting, `"0_0_10"` ends up **before** `"0_0_2"` if the comparison is lexicographical or if parsing fails (because `strconv.Atoi("0_0_10")` fails, so it falls back to a string comparison, which gives the wrong order for version semantics).
+- Your assertion expects `"0_0_10"` to be the "first version", but the actual first is `"0_0_2"` due to faulty sorting.
+- The panic (`index out of range`) occurs because after cleanup, the slice doesn’t have enough elements, but you access `versions[1]` anyway.
 
-	if vi >= 0 {
-		slog.Info("found same stuff as followed-> ", "version", versionsContainer.Versions[vi].Version)
-		uploadService.cleanUpLowerVersion(versionPath, &versionsContainer.Versions)
-	}
+## The core issue:  
+**Sorting does not handle underscore-separated or semver strings correctly.**
 
-	uploadService.cleanUpLowerVersion(versionPath, &versionsContainer.Versions)
+***
 
-	return versionsContainer, nil
+## How to fix:
+
+### 1. Parse your version string into its numeric components and compare each part.
+Here’s a Go function for safe, semantic (major, minor, patch) comparison:
+
+```go
+func semverLess(a, b string) bool {
+    parse := func(v string) (int, int, int) {
+        parts := strings.Split(v, "_")
+        get := func(i int) int {
+            if i < len(parts) {
+                n, err := strconv.Atoi(parts[i])
+                if err == nil {
+                    return n
+                }
+            }
+            return 0
+        }
+        return get(0), get(1), get(2)
+    }
+    a1, a2, a3 := parse(a)
+    b1, b2, b3 := parse(b)
+    if a1 != b1 {
+        return a1 < b1
+    }
+    if a2 != b2 {
+        return a2 < b2
+    }
+    return a3 < b3
 }
+```
+Now, change your sort code to:
+```go
+sort.Slice(*versionContainers, func(i, j int) bool {
+    return semverLess((*versionContainers)[i].Version, (*versionContainers)[j].Version)
+})
+```
 
-func (uploadService UploadService) cleanUpLowerVersion(versionPath string, versionContainers *[]VersionContainer) {
-	// if len(*versionContainers) <= MAX_VERSIONS {
-	// 	return
-	// }
-	// Sort versions in ascending order
-	sort.Slice(*versionContainers, func(i, j int) bool {
-		vi, errI := strconv.Atoi((*versionContainers)[i].Version)
-		vj, errJ := strconv.Atoi((*versionContainers)[j].Version)
-		if errI != nil || errJ != nil {
-			return (*versionContainers)[i].Version < (*versionContainers)[j].Version
-		}
-		return vi < vj
-	})
-	*versionContainers = removeDuplicates(*versionContainers)
+### 2. Make sure your test AND code always use the same version format (preferably dots: `0.0.10`, but underscores can work with this comparison).
 
-	// Remove older versions until we reach MAX_VERSIONS
-	for len(*versionContainers) > MAX_VERSIONS {
-		oldestVersion := (*versionContainers)[0]
-		slog.Info("Deleting oldest version", "version", oldestVersion.Version)
-		uploadService.cleanUpVersionAtPosition(0, versionPath, versionContainers)
-	}
-}
+### 3. In your test, always check slice lengths before accessing indexes, or adjust the assertions for the number of MAX_VERSIONS.
 
-	t.Run("Mixed Numeric and Semantic Versions", func(t *testing.T) {
-		versions := []VersionContainer{
-			{Version: "0_0_1"},
-			{Version: "0_0_2"},
-			{Version: "0_0_2"}, // Duplicate
-			{Version: "0_0_10"},
-			{Version: "0_0_150"},
-			{Version: "0_0_150"}, // Duplicate
-		}
-		uploadService.cleanUpLowerVersion(versionPath, &versions)
-		if MAX_VERSIONS <= 4{
+***
 
-		assert.Len(t, versions, MAX_VERSIONS, "Should have MAX_VERSIONS versions after cleanup")
-		}else{
-			assert.Len(t, versions, 4, "Should have MAX_VERSIONS versions after cleanup")
+## In summary:
+- You need semantic version sorting—lexical or direct integer parsing will not work for strings like `0_0_10`.
+- The panic is due to reading indexes from a slice that’s already been truncated by cleanup.
 
-		}
-		// Check for uniqueness
-		uniqueVersions := make(map[string]bool)
-		for _, v := range versions {
-			assert.False(t, uniqueVersions[v.Version], "Version %s should not be duplicate", v.Version)
-			uniqueVersions[v.Version] = true
-		}
-		if MAX_VERSIONS <= 4{
+***
 
-			assert.Equal(t, "0_0_10", versions[MAX_VERSIONS-1].Version, "First version should be 0_0_10")
-			assert.Equal(t, "0_0_150", versions[MAX_VERSIONS].Version, "Second version should be 0_0_150")
-		}else{
-			assert.Equal(t, "0_0_2", versions[2].Version, "First version should be 0_0_2")
-			assert.Equal(t, "0_0_10", versions[3].Version, "Second version should be 0_0_10")
-		}
-	})
+**Fix your version sort function, and your test and code will behave as expected, preserving the highest versions and producing the correct order for your cleanup and assertions.**
 
-: internal/registry TestUploadService_CleanUpLowerVersion_DuplicateVersions/Mixed_Numeric_and_Semantic_Versions (0.00s)
-2025/08/22 05:46:12 INFO Deleting oldest version version=0_0_1
-    upload_service_test.go:371: 
-        	Error Trace:	/builds/oase/tp-registry/internal/registry/upload_service_test.go:371
-        	Error:      	Not equal: 
-        	            	expected: "0_0_10"
-        	            	actual  : "0_0_2"
-        	            	
-        	            	Diff:
-        	            	--- Expected
-        	            	+++ Actual
-        	            	@@ -1 +1 @@
-        	            	-0_0_10
-        	            	+0_0_2
-        	Test:       	TestUploadService_CleanUpLowerVersion_DuplicateVersions/Mixed_Numeric_and_Semantic_Versions
-        	Messages:   	First version should be 0_0_10
-=== FAIL: internal/registry TestUploadService_CleanUpLowerVersion_DuplicateVersions (0.00s)
-panic: runtime error: index out of range [3] with length 3 [recovered]
-	panic: runtime error: index out of range [3] with length 3
-goroutine 96 [running]:
-testing.tRunner.func1.2({0x9510c0, 0xc000388a98})
-	/usr/local/go/src/testing/testing.go:1631 +0x3f7
-testing.tRunner.func1()
-	/usr/local/go/src/testing/testing.go:1634 +0x6b6
-panic({0x9510c0?, 0xc000388a98?})
-	/usr/local/go/src/runtime/panic.go:770 +0x132
-tp-registry/internal/registry.TestUploadService_CleanUpLowerVersion_DuplicateVersions.func2(0xc0003324e0)
-	/builds/oase/tp-registry/internal/registry/upload_service_test.go:372 +0x5f8
-testing.tRunner(0xc0003324e0, 0xc000016b40)
-	/usr/local/go/src/testing/testing.go:1689 +0x21f
-created by testing.(*T).Run in goroutine 94
-	/usr/local/go/src/testing/testing.go:1742 +0x826
+If you’d like a complete drop-in replacement for the sorting/cleanup code, let me know!
+
+Citations:
+[1] Publish providers to the Terraform registry https://developer.hashicorp.com/terraform/registry/providers/publishing
