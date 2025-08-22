@@ -69,3 +69,81 @@ If you’d like a complete drop-in replacement for the sorting/cleanup code, let
 
 Citations:
 [1] Publish providers to the Terraform registry https://developer.hashicorp.com/terraform/registry/providers/publishing
+
+
+apply it
+
+Here’s how to update your code to use semantic version-aware sorting for underscore-separated version strings. This will fix your order, test, and the “index out of range” issue.
+
+***
+
+## 1. Add a semantic version comparison function
+
+Place this function somewhere near your sorting logic:
+
+```go
+import (
+    "strconv"
+    "strings"
+)
+
+func semverUnderscoreLess(a, b string) bool {
+    parse := func(v string) (int, int, int) {
+        parts := strings.Split(v, "_")
+        get := func(i int) int {
+            if i < len(parts) {
+                n, err := strconv.Atoi(parts[i])
+                if err == nil {
+                    return n
+                }
+            }
+            return 0
+        }
+        return get(0), get(1), get(2)
+    }
+    a1, a2, a3 := parse(a)
+    b1, b2, b3 := parse(b)
+    if a1 != b1 {
+        return a1 < b1
+    }
+    if a2 != b2 {
+        return a2 < b2
+    }
+    return a3 < b3
+}
+```
+
+***
+
+## 2. Update your sort call in `cleanUpLowerVersion`
+
+Replace this block in `cleanUpLowerVersion`:
+
+```go
+sort.Slice(*versionContainers, func(i, j int) bool {
+    vi, errI := strconv.Atoi((*versionContainers)[i].Version)
+    vj, errJ := strconv.Atoi((*versionContainers)[j].Version)
+    if errI != nil || errJ != nil {
+        return (*versionContainers)[i].Version < (*versionContainers)[j].Version
+    }
+    return vi < vj
+})
+```
+**With:**
+```go
+sort.Slice(*versionContainers, func(i, j int) bool {
+    return semverUnderscoreLess((*versionContainers)[i].Version, (*versionContainers)[j].Version)
+})
+```
+
+***
+
+## 3. Re-run your test
+
+Now, the sorting will treat `"0_0_10"` as greater than `"0_0_2"`, ensuring your tests and version cleanup logic behave correctly.
+
+***
+
+**That’s it! Your implementation now handles semantic (even underscore-separated) versions as expected.**
+
+
