@@ -1,110 +1,128 @@
-VERSION:=v0.0.0-local
-default: testacc
+func (uploadService UploadService) initMetaContainer(c *gin.Context, metaFileName, version, versionPath string) (VersionsContainer, error) {
+	jsonFile, err := os.Open(metaFileName)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return VersionsContainer{}, nil
+		}
+		c.String(http.StatusBadRequest, "got meta file parse / open err: %s", err.Error())
+		return VersionsContainer{}, err
+	}
 
-# Run acceptance tests
-.PHONY: format testacc
-testacc:
-	TF_ACC=1 go test ./... -v $(TESTARGS) -timeout 120m
-fmt: 
-	@gofmt -w -s .
-check:
-	@revive -formatter unix ./...
-install:
-	@go install .
+	defer jsonFile.Close()
 
-clean:
-	rm -fr bin/ .tmp/
+	byteValue, err := io.ReadAll(jsonFile)
+	if err != nil {
+		return VersionsContainer{}, err
+	}
 
-#? build: build binary for current system
-build: bin/current_system/terraform-provider-oase_$(VERSION)
+	var versionsContainer VersionsContainer
+	err = json.Unmarshal(byteValue, &versionsContainer)
+	if err != nil {
+		return VersionsContainer{}, err
+	}
 
-#? run: run plugin
-run: build
-	bin/current_system/terraform-provider-oase
+	vi := -1
+	for i, item := range versionsContainer.Versions {
+		if item.Version == version {
+			vi = i
+		}
+	}
 
-bin/current_system/terraform-provider-oase_%:  GOARGS =
-bin/darwin_amd64/terraform-provider-oase_%:  GOARGS = GOOS=darwin GOARCH=amd64
-bin/linux_amd64/terraform-provider-oase_%:  GOARGS = GOOS=linux GOARCH=amd64
-bin/linux_386/terraform-provider-oase_%:  GOARGS = GOOS=linux GOARCH=386
-bin/linux_arm/terraform-provider-oase_%:  GOARGS = GOOS=linux GOARCH=arm
-bin/windows_amd64/terraform-provider-oase_%:  GOARGS = GOOS=windows GOARCH=amd64
-bin/windows_386/terraform-provider-oase_%:  GOARGS = GOOS=windows GOARCH=386
+	if vi >= 0 {
+		slog.Info("found same stuff as followed-> ", "version", versionsContainer.Versions[vi].Version)
+		uploadService.cleanUpLowerVersion(versionPath, &versionsContainer.Versions)
+	}
 
-bin/%/terraform-provider-oase_$(VERSION): clean
-	$(GOARGS) CGO_ENABLED=0 go build -o $@ -ldflags="-s -w" .
+	uploadService.cleanUpLowerVersion(versionPath, &versionsContainer.Versions)
 
-bin/release/terraform-provider-oase_%.zip: NAME=terraform-provider-oase_$(VERSION)_$*
-bin/release/terraform-provider-oase_%.zip: DEST=bin/release/$(VERSION)/$(NAME)
-bin/release/terraform-provider-oase_%.zip: bin/%/terraform-provider-oase_$(VERSION)
-	mkdir -p $(DEST)
-	cp bin/$*/terraform-provider-oase_$(VERSION) $(DEST)
-	cd $(DEST) && zip -r ../$(NAME).zip . && cd .. && sha256sum $(NAME).zip > $(NAME).SHA256SUMS && rm -rf $(NAME)
+	return versionsContainer, nil
+}
 
-release: \
-	bin/release/terraform-provider-oase_darwin_amd64.zip \
-	bin/release/terraform-provider-oase_linux_amd64.zip \
-	bin/release/terraform-provider-oase_linux_386.zip \
-	bin/release/terraform-provider-oase_linux_arm.zip \
-	bin/release/terraform-provider-oase_windows_amd64.zip \
-	bin/release/terraform-provider-oase_windows_386.zip
+func (uploadService UploadService) cleanUpLowerVersion(versionPath string, versionContainers *[]VersionContainer) {
+	// if len(*versionContainers) <= MAX_VERSIONS {
+	// 	return
+	// }
+	// Sort versions in ascending order
+	sort.Slice(*versionContainers, func(i, j int) bool {
+		vi, errI := strconv.Atoi((*versionContainers)[i].Version)
+		vj, errJ := strconv.Atoi((*versionContainers)[j].Version)
+		if errI != nil || errJ != nil {
+			return (*versionContainers)[i].Version < (*versionContainers)[j].Version
+		}
+		return vi < vj
+	})
+	*versionContainers = removeDuplicates(*versionContainers)
 
-Your current Makefile uses a fixed `VERSION:=v0.0.0-local`, which does not match the dynamic semantic versioning expected by your Terraform/OpenTofu provider registry. To fix the incompatible provider version error, you need to:
+	// Remove older versions until we reach MAX_VERSIONS
+	for len(*versionContainers) > MAX_VERSIONS {
+		oldestVersion := (*versionContainers)[0]
+		slog.Info("Deleting oldest version", "version", oldestVersion.Version)
+		uploadService.cleanUpVersionAtPosition(0, versionPath, versionContainers)
+	}
+}
 
-### 1. Change versioning from fixed `v0.0.0-local` to dynamic semantic version:
+	t.Run("Mixed Numeric and Semantic Versions", func(t *testing.T) {
+		versions := []VersionContainer{
+			{Version: "0_0_1"},
+			{Version: "0_0_2"},
+			{Version: "0_0_2"}, // Duplicate
+			{Version: "0_0_10"},
+			{Version: "0_0_150"},
+			{Version: "0_0_150"}, // Duplicate
+		}
+		uploadService.cleanUpLowerVersion(versionPath, &versions)
+		if MAX_VERSIONS <= 4{
 
-For example, derive the version from the environment or CI variables in a SemVer format with dots, such as:
+		assert.Len(t, versions, MAX_VERSIONS, "Should have MAX_VERSIONS versions after cleanup")
+		}else{
+			assert.Len(t, versions, 4, "Should have MAX_VERSIONS versions after cleanup")
 
-```makefile
-VERSION ?= $(CI_PIPELINE_ID).0.0
-VERSION := v$(VERSION)
-```
+		}
+		// Check for uniqueness
+		uniqueVersions := make(map[string]bool)
+		for _, v := range versions {
+			assert.False(t, uniqueVersions[v.Version], "Version %s should not be duplicate", v.Version)
+			uniqueVersions[v.Version] = true
+		}
+		if MAX_VERSIONS <= 4{
 
-This sets `VERSION` to something like `v3987.0.0` if `CI_PIPELINE_ID=3987`.
+			assert.Equal(t, "0_0_10", versions[MAX_VERSIONS-1].Version, "First version should be 0_0_10")
+			assert.Equal(t, "0_0_150", versions[MAX_VERSIONS].Version, "Second version should be 0_0_150")
+		}else{
+			assert.Equal(t, "0_0_2", versions[2].Version, "First version should be 0_0_2")
+			assert.Equal(t, "0_0_10", versions[3].Version, "Second version should be 0_0_10")
+		}
+	})
 
-### 2. Update your `release` targets and artifacts to use this dynamic `VERSION`:
-
-Your bin and release naming rules should adopt this `${VERSION}` everywhere, for example:
-
-```makefile
-bin/%/terraform-provider-oase_$(VERSION): clean
-	$(GOARGS) CGO_ENABLED=0 go build -o $@ -ldflags="-s -w" .
-
-bin/release/terraform-provider-oase_%.zip: NAME=terraform-provider-oase_$(VERSION)_$*
-bin/release/terraform-provider-oase_%.zip: DEST=bin/release/$(VERSION)/$(NAME)
-bin/release/terraform-provider-oase_%.zip: bin/%/terraform-provider-oase_$(VERSION)
-	mkdir -p $(DEST)
-	cp bin/$*/terraform-provider-oase_$(VERSION) $(DEST)
-	cd $(DEST) && zip -r ../$(NAME).zip . && cd .. && sha256sum $(NAME).zip > $(NAME).SHA256SUMS && rm -rf $(NAME)
-```
-
-### 3. How to use in CI pipeline
-
-Make sure your pipeline exports `CI_PIPELINE_ID` or a proper semver version string before running `make release`. Example export in CI job:
-
-```bash
-export CI_PIPELINE_ID=3987  # or get from your CI environment variables
-make release
-```
-
-### 4. Example final snippet
-
-```makefile
-VERSION ?= $(CI_PIPELINE_ID).0.0
-VERSION := v$(VERSION)
-
-.PHONY: release
-release: \
-	bin/release/terraform-provider-oase_darwin_amd64.zip \
-	bin/release/terraform-provider-oase_linux_amd64.zip \
-	bin/release/terraform-provider-oase_linux_386.zip \
-	bin/release/terraform-provider-oase_linux_arm.zip \
-	bin/release/terraform-provider-oase_windows_amd64.zip \
-	bin/release/terraform-provider-oase_windows_386.zip
-```
-
-Run your build/upload with this updated semver, and the registry and OpenTofu should correctly recognize and find compatible provider versions.
-
-***
-
-If you want, I can help you generate a full adapted Makefile snippet or CI script to handle this versioning automatically.
-
+: internal/registry TestUploadService_CleanUpLowerVersion_DuplicateVersions/Mixed_Numeric_and_Semantic_Versions (0.00s)
+2025/08/22 05:46:12 INFO Deleting oldest version version=0_0_1
+    upload_service_test.go:371: 
+        	Error Trace:	/builds/oase/tp-registry/internal/registry/upload_service_test.go:371
+        	Error:      	Not equal: 
+        	            	expected: "0_0_10"
+        	            	actual  : "0_0_2"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-0_0_10
+        	            	+0_0_2
+        	Test:       	TestUploadService_CleanUpLowerVersion_DuplicateVersions/Mixed_Numeric_and_Semantic_Versions
+        	Messages:   	First version should be 0_0_10
+=== FAIL: internal/registry TestUploadService_CleanUpLowerVersion_DuplicateVersions (0.00s)
+panic: runtime error: index out of range [3] with length 3 [recovered]
+	panic: runtime error: index out of range [3] with length 3
+goroutine 96 [running]:
+testing.tRunner.func1.2({0x9510c0, 0xc000388a98})
+	/usr/local/go/src/testing/testing.go:1631 +0x3f7
+testing.tRunner.func1()
+	/usr/local/go/src/testing/testing.go:1634 +0x6b6
+panic({0x9510c0?, 0xc000388a98?})
+	/usr/local/go/src/runtime/panic.go:770 +0x132
+tp-registry/internal/registry.TestUploadService_CleanUpLowerVersion_DuplicateVersions.func2(0xc0003324e0)
+	/builds/oase/tp-registry/internal/registry/upload_service_test.go:372 +0x5f8
+testing.tRunner(0xc0003324e0, 0xc000016b40)
+	/usr/local/go/src/testing/testing.go:1689 +0x21f
+created by testing.(*T).Run in goroutine 94
+	/usr/local/go/src/testing/testing.go:1742 +0x826
