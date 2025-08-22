@@ -1,135 +1,67 @@
-apply them.
-stages:
-  - check
-  - test
-  - install
-  - build
-  - distribute
-  - e2e-test
+apply for gitlab an makefile
+
+To apply your requested versioning style `0_0_3997` in GitLab CI and your Makefile, here is a tailored solution that preserves underscores and integrates well into your pipeline:
+
+***
+
+## GitLab CI Configuration Snippet
+
+Modify your `.gitlab-ci.yml` as follows:
+
+```yaml
 variables:
   VERSION_PIP_ID: "0_0_${CI_PIPELINE_ID}"
-workflow:
-   rules:
-     - if: $CI_MERGE_REQUEST_IID
-     - if: $CI_COMMIT_TAG
-     - if: $CI_PIPELINE_SOURCE == "schedule"
-     - if: $CI_COMMIT_REF_PROTECTED == "true"
-
-.job_rules: &job_rules
-   - if: $CI_COMMIT_BRANCH == "develop"
-   - if: $CI_COMMIT_BRANCH == "main"
-   - if: $CI_COMMIT_BRANCH =~ "/^release/"
-   - if: $CI_COMMIT_BRANCH =~ "/^hotfix/"
-   - if: $CI_COMMIT_BRANCH =~ "/^feature/"
-
-check:
-  stage: check 
-  script:
-    - go install github.com/mgechev/revive@v1.6.0
-    - export PATH="${PATH}:$(go env GOPATH)/bin"
-    - make check
-  tags:
-    - golang
-    - env:dev
-test:
-  stage: test
-  image: 
-    name: registry.gitlab.itsm-suite.service.itzbund.net/oase/container-deployment/1.22-bullseye:latest
-  script: make testacc
-  tags:
-    - golang
-    - env:dev
-       
+  VERSION: "v0_0_${CI_PIPELINE_ID}"
 
 install:
   stage: install
-  tags:
-    - golang
-    - env:dev
-  except:
-    - schedules
-  variables:
-    HTTP_PROXY: http://10.130.165.20:3128
-    HTTPS_PROXY: http://10.130.165.20:3128
-  before_script:
-    - echo "Acquire::http::Proxy \"http://10.130.165.20:3128/\";" > /etc/apt/apt.conf.d/99proxy
-    - echo "Acquire::https::Proxy \"http://10.130.165.20:3128/\";" >> /etc/apt/apt.conf.d/99proxy
   script:
-    - apt-get update 
+    - apt-get update
     - apt-get install -y zip
-    - export RELEASE_VERSION="${CI_PIPELINE_ID}"
-    - echo "Building version ${VERSION_PIP_ID}"
-    - make release VERSION=${VERSION_PIP_ID}
-    - cp sign_files.sh bin/release/$VERSION_PIP_ID/
+    - echo "Building version ${VERSION}"
+    - make release VERSION=${VERSION}  # Pass VERSION with underscores
+    - cp sign_files.sh bin/release/${VERSION}/
     - gpg --import $key
     - gpg --list-secret-keys
-    - cd bin/release/$VERSION_PIP_ID/ && gpg --armor --export ci/cd > key.gpg
+    - cd bin/release/${VERSION}/ && gpg --armor --export ci/cd > key.gpg
     - sh sign_files.sh && rm sign_files.sh
   artifacts:
     paths:
       - bin/release
     expire_in: 1 hour
 
-
 push-to-terraform-registry:
   stage: distribute
   dependencies:
     - install
-  tags:
-      - bash
-      - env:dev
   script:
-      - echo  $VERSION_PIP_ID
-      - curl -k --location 'https://tfp.entw.oase.itz.itzbund.net/upload' -F "files=@bin/release/${VERSION_PIP_ID}/terraform-provider-oase_${VERSION_PIP_ID}_linux_amd64.SHA256SUMS" -F "files=@bin/release/${VERSION_PIP_ID}/terraform-provider-oase_${VERSION_PIP_ID}_linux_amd64.SHA256SUMS.sig" -F "files=@bin/release/${VERSION_PIP_ID}/terraform-provider-oase_${VERSION_PIP_ID}_linux_amd64.zip" -F "gpg-key=@bin/release/${VERSION_PIP_ID}/key.gpg"
-e2e-test:
-  stage: e2e-test
-  dependencies:
-    - install
-  variables:
-    TF_LOG: DEBUG
-  tags:
-      - bash
-      - env:dev
-  script:
-      - cd test_e2e
-      - cd ..
-      - ls -a
-      - cd test_e2e
-      - pwd
-      - ls -a
-      - export TF_LOG=DEBUG
-      - tofu --version
-      - tofu init
-      - tofu apply --auto-approve
-      - tofu destroy --auto-approve
+    - echo "Uploading version ${VERSION}"
+    - curl -k --location 'https://tfp.entw.oase.itz.itzbund.net/upload' \
+      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.SHA256SUMS" \
+      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.SHA256SUMS.sig" \
+      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.zip" \
+      -F "gpg-key=@bin/release/${VERSION}/key.gpg"
+```
 
+***
 
---------------------------------------------------------------------------------
-makefile
-VERSION:=v0.0.0-local
-default: testacc
+## Makefile Adjustments
 
-# Run acceptance tests
-.PHONY: format testacc
-testacc:
-	TF_ACC=1 go test ./... -v $(TESTARGS) -timeout 120m
-fmt: 
-	@gofmt -w -s .
-check:
-	@revive -formatter unix ./...
-install:
-	@go install .
+At the top of your `Makefile`:
 
-clean:
-	rm -fr bin/ .tmp/
+```makefile
+VERSION ?= v0_0_3997
+```
 
-#? build: build binary for current system
-build: bin/current_system/terraform-provider-oase_$(VERSION)
+You will override this via GitLab CI with:
 
-#? run: run plugin
-run: build
-	bin/current_system/terraform-provider-oase
+```bash
+make release VERSION=v0_0_3924
+```
 
+Your build and release targets:
+
+```makefile
 bin/current_system/terraform-provider-oase_%:  GOARGS =
 bin/darwin_amd64/terraform-provider-oase_%:  GOARGS = GOOS=darwin GOARCH=amd64
 bin/linux_amd64/terraform-provider-oase_%:  GOARGS = GOOS=linux GOARCH=amd64
@@ -155,114 +87,28 @@ release: \
 	bin/release/terraform-provider-oase_linux_arm.zip \
 	bin/release/terraform-provider-oase_windows_amd64.zip \
 	bin/release/terraform-provider-oase_windows_386.zip
-
-To apply the necessary fixes for your CI pipeline and Makefile to produce properly versioned Terraform provider artifacts that Terraform/OpenTofu expects, you should:
-
-## 1. Change your pipeline variables and usage:
-
-Replace your existing:
-```yaml
-variables:
-  VERSION_PIP_ID: "0_0_${CI_PIPELINE_ID}"
-```
-with a semver-compatible variable, for example:
-```yaml
-variables:
-  VERSION_PIP_ID: "${CI_PIPELINE_ID}.0.0"
-```
-This produces a version like `3924.0.0` instead of `0_0_3924`, aligning with Terraform semantic version expectations.
-
-***
-
-## 2. Update your Makefile VERSION variable:
-
-Change the `VERSION` in your Makefile to use the CI variable:
-
-Replace:
-```makefile
-VERSION:=v0.0.0-local
-```
-with:
-```makefile
-VERSION ?= v$(VERSION_PIP_ID)
-```
-This way, `make release` uses version like `v3924.0.0`.
-
-***
-
-## 3. Adjust your Makefile targets to use the `VERSION` variable consistently:
-
-Make sure the build and release targets produce files named exactly:
-```
-terraform-provider-oase_v3924.0.0_linux_amd64.zip
-```
-for example.
-
-Your existing rules:
-
-```makefile
-bin/current_system/terraform-provider-oase_%:  GOARGS =
-bin/darwin_amd64/terraform-provider-oase_%:  GOARGS = GOOS=darwin GOARCH=amd64
-bin/linux_amd64/terraform-provider-oase_%:  GOARGS = GOOS=linux GOARCH=amd64
-...
-bin/%/terraform-provider-oase_$(VERSION): clean
-	$(GOARGS) CGO_ENABLED=0 go build -o $@ -ldflags="-s -w" .
-```
-
-will work if `$(VERSION)` is set correctly as noted.
-
-***
-
-## 4. Sample adjusted `.gitlab-ci.yml` snippet for the install stage:
-
-```yaml
-install:
-  stage: install
-  script:
-    - apt-get update
-    - apt-get install -y zip
-    - export VERSION_PIP_ID="${CI_PIPELINE_ID}.0.0" 
-    - export VERSION="v${VERSION_PIP_ID}"
-    - echo "Building version ${VERSION}"
-    - make release VERSION=${VERSION}
-    - cp sign_files.sh bin/release/${VERSION}/
-    - gpg --import $key
-    - gpg --list-secret-keys
-    - cd bin/release/${VERSION}/ && gpg --armor --export ci/cd > key.gpg
-    - sh sign_files.sh && rm sign_files.sh
-  artifacts:
-    paths:
-      - bin/release
-    expire_in: 1 hour
 ```
 
 ***
 
-## 5. Sample adjusted `push-to-terraform-registry` job:
+## Important Notes:
 
-```yaml
-push-to-terraform-registry:
-  stage: distribute
-  dependencies:
-    - install
-  script:
-    - echo $VERSION
-    - curl -k --location 'https://tfp.entw.oase.itz.itzbund.net/upload' \
-      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.SHA256SUMS" \
-      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.SHA256SUMS.sig" \
-      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.zip" \
-      -F "gpg-key=@bin/release/${VERSION}/key.gpg"
-```
+- **Ensure your upload service and metadata JSON handle versions with underscores**, including matching paths that contain `v0_0_3997`.
+- **Terraform version strings** in `.tf` files are semver with dots by default, so using underscore versions may cause Terraform client errors unless you fully control registry version mappings.
+- If you want to use underscore versioning consistently, your Terraform client must be pointed explicitly to your private registry and accept those version strings.
 
 ***
 
-## Summary
+This setup **builds, packages, uploads, and references artifacts with underscore-separated versions** like `v0_0_3924`, fulfilling your request.
 
-- Use **dot-separated semver version strings**: `3924.0.0`
-- Use that version string everywhere consistently in build, package, upload
-- Update pipeline variables and Makefile accordingly
+If you want, I can generate a fully integrated `.gitlab-ci.yml` and Makefile example with comments tailored for your project.
 
-This ensures Terraform/OpenTofu will find the matching `zip` files for requested versions/platforms, fixing the “package not available” error.
-
-Let me know if you want me to generate a full updated `Makefile` or `.gitlab-ci.yml` for your project applying these changes!
-
+Citations:
+[1] Using Terraform with GitLab https://scalr.com/learning-center/using-terraform-with-gitlab/
+[2] Infrastructure as Code with OpenTofu and GitLab https://docs.gitlab.com/user/infrastructure/iac/
+[3] How to Implement GitLab CI/CD Pipeline with Terraform https://spacelift.io/blog/gitlab-terraform
+[4] GitLab CI/CD examples https://docs.gitlab.com/ci/examples/
+[5] terraform-makefile https://gitlab.com/makefile/terraform-makefile
+[6] Gitlab CI/CD with Terraform and 3rd party plugin https://stackoverflow.com/questions/56546599/gitlab-ci-cd-with-terraform-and-3rd-party-plugin
+[7] Suggestions for improvement of Terraform deployment ... https://www.reddit.com/r/Terraform/comments/1i47w19/suggestions_for_improvement_of_terraform/
+[8] Speed Up Terraform in CI/CD Pipelines https://infinitelambda.com/speed-up-terraform-cicd-pipeline/
