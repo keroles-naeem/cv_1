@@ -1,67 +1,92 @@
-apply for gitlab an makefile
+is this work ?
 
-To apply your requested versioning style `0_0_3997` in GitLab CI and your Makefile, here is a tailored solution that preserves underscores and integrates well into your pipeline:
-
-***
-
-## GitLab CI Configuration Snippet
-
-Modify your `.gitlab-ci.yml` as follows:
-
-```yaml
-variables:
-  VERSION_PIP_ID: "0_0_${CI_PIPELINE_ID}"
-  VERSION: "v0_0_${CI_PIPELINE_ID}"
-
-install:
-  stage: install
   script:
     - apt-get update
     - apt-get install -y zip
     - echo "Building version ${VERSION}"
-    - make release VERSION=${VERSION}  # Pass VERSION with underscores
-    - cp sign_files.sh bin/release/${VERSION}/
+    - export VERSION="${VERSION}"
+    - make release VERSION=${VERSION_PIP_ID}
+    - cp sign_files.sh bin/release/${VERSION_PIP_ID}/
     - gpg --import $key
     - gpg --list-secret-keys
-    - cd bin/release/${VERSION}/ && gpg --armor --export ci/cd > key.gpg
+    - cd bin/release/${VERSION_PIP_ID}/ && gpg --armor --export ci/cd > key.gpg
     - sh sign_files.sh && rm sign_files.sh
   artifacts:
     paths:
       - bin/release
     expire_in: 1 hour
 
+
 push-to-terraform-registry:
   stage: distribute
   dependencies:
     - install
+  tags:
+      - bash
+      - env:dev
   script:
-    - echo "Uploading version ${VERSION}"
+    - echo "Uploading version ${VERSION_PIP_ID}"
     - curl -k --location 'https://tfp.entw.oase.itz.itzbund.net/upload' \
-      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.SHA256SUMS" \
-      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.SHA256SUMS.sig" \
-      -F "files=@bin/release/${VERSION}/terraform-provider-oase_${VERSION}_linux_amd64.zip" \
-      -F "gpg-key=@bin/release/${VERSION}/key.gpg"
-```
+      -F "files=@bin/release/${VERSION_PIP_ID}/terraform-provider-oase_${VERSION_PIP_ID}_linux_amd64.SHA256SUMS" \
+      -F "files=@bin/release/${VERSION_PIP_ID}/terraform-provider-oase_${VERSION_PIP_ID}_linux_amd64.SHA256SUMS.sig" \
+      -F "files=@bin/release/${VERSION_PIP_ID}/terraform-provider-oase_${VERSION_PIP_ID}_linux_amd64.zip" \
+      -F "gpg-key=@bin/release/${VERSION_PIP_ID}/key.gpg"
+  script:
+    - apt-get update
+    - apt-get install -y zip
+    - echo "Building version ${VERSION}"
+    - export VERSION="${VERSION}"
+    - make release VERSION=${VERSION_PIP_ID}
+    - cp sign_files.sh bin/release/${VERSION_PIP_ID}/
+    - gpg --import $key
+    - gpg --list-secret-keys
+    - cd bin/release/${VERSION_PIP_ID}/ && gpg --armor --export ci/cd > key.gpg
+    - sh sign_files.sh && rm sign_files.sh
+  artifacts:
+    paths:
+      - bin/release
+    expire_in: 1 hour
 
-***
 
-## Makefile Adjustments
+push-to-terraform-registry:
+  stage: distribute
+  dependencies:
+    - install
+  tags:
+      - bash
+      - env:dev
+  script:
+    - echo "Uploading version ${VERSION_PIP_ID}"
+    - curl -k --location 'https://tfp.entw.oase.itz.itzbund.net/upload' \
+      -F "files=@bin/release/${VERSION_PIP_ID}/terraform-provider-oase_${VERSION_PIP_ID}_linux_amd64.SHA256SUMS" \
+      -F "files=@bin/release/${VERSION_PIP_ID}/terraform-provider-oase_${VERSION_PIP_ID}_linux_amd64.SHA256SUMS.sig" \
+      -F "files=@bin/release/${VERSION_PIP_ID}/terraform-provider-oase_${VERSION_PIP_ID}_linux_amd64.zip" \
+      -F "gpg-key=@bin/release/${VERSION_PIP_ID}/key.gpg"
 
-At the top of your `Makefile`:
+VERSION:=$(VERSION)
+default: testacc
 
-```makefile
-VERSION ?= v0_0_3997
-```
+# Run acceptance tests
+.PHONY: format testacc
+testacc:
+	TF_ACC=1 go test ./... -v $(TESTARGS) -timeout 120m
+fmt: 
+	@gofmt -w -s .
+check:
+	@revive -formatter unix ./...
+install:
+	@go install .
 
-You will override this via GitLab CI with:
+clean:
+	rm -fr bin/ .tmp/
 
-```bash
-make release VERSION=v0_0_3924
-```
+#? build: build binary for current system
+build: bin/current_system/terraform-provider-oase_$(VERSION)
 
-Your build and release targets:
+#? run: run plugin
+run: build
+	bin/current_system/terraform-provider-oase
 
-```makefile
 bin/current_system/terraform-provider-oase_%:  GOARGS =
 bin/darwin_amd64/terraform-provider-oase_%:  GOARGS = GOOS=darwin GOARCH=amd64
 bin/linux_amd64/terraform-provider-oase_%:  GOARGS = GOOS=linux GOARCH=amd64
@@ -87,28 +112,3 @@ release: \
 	bin/release/terraform-provider-oase_linux_arm.zip \
 	bin/release/terraform-provider-oase_windows_amd64.zip \
 	bin/release/terraform-provider-oase_windows_386.zip
-```
-
-***
-
-## Important Notes:
-
-- **Ensure your upload service and metadata JSON handle versions with underscores**, including matching paths that contain `v0_0_3997`.
-- **Terraform version strings** in `.tf` files are semver with dots by default, so using underscore versions may cause Terraform client errors unless you fully control registry version mappings.
-- If you want to use underscore versioning consistently, your Terraform client must be pointed explicitly to your private registry and accept those version strings.
-
-***
-
-This setup **builds, packages, uploads, and references artifacts with underscore-separated versions** like `v0_0_3924`, fulfilling your request.
-
-If you want, I can generate a fully integrated `.gitlab-ci.yml` and Makefile example with comments tailored for your project.
-
-Citations:
-[1] Using Terraform with GitLab https://scalr.com/learning-center/using-terraform-with-gitlab/
-[2] Infrastructure as Code with OpenTofu and GitLab https://docs.gitlab.com/user/infrastructure/iac/
-[3] How to Implement GitLab CI/CD Pipeline with Terraform https://spacelift.io/blog/gitlab-terraform
-[4] GitLab CI/CD examples https://docs.gitlab.com/ci/examples/
-[5] terraform-makefile https://gitlab.com/makefile/terraform-makefile
-[6] Gitlab CI/CD with Terraform and 3rd party plugin https://stackoverflow.com/questions/56546599/gitlab-ci-cd-with-terraform-and-3rd-party-plugin
-[7] Suggestions for improvement of Terraform deployment ... https://www.reddit.com/r/Terraform/comments/1i47w19/suggestions_for_improvement_of_terraform/
-[8] Speed Up Terraform in CI/CD Pipelines https://infinitelambda.com/speed-up-terraform-cicd-pipeline/
